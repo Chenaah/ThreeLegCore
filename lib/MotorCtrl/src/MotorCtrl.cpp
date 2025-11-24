@@ -171,8 +171,8 @@ Motor_state Motor::Unpack(const twai_message_t msg)
     temp.mode = (msg.identifier >> 22) & 0x03;
 
     temp.angle = (float((uint16_t(msg.data[0]) << 8) + msg.data[1]) / 65536.0F - 0.5F) * 8.0F * M_PI;
-    temp.angle_v = (float((uint16_t(msg.data[2]) << 8) + msg.data[3]) / 65536.0F - 0.5F) * 60.0F;
-    temp.torque = (float((uint16_t(msg.data[4]) << 8) + msg.data[5]) / 65536.0F - 0.5F) * 24.0F;
+    temp.angle_v = (float((uint16_t(msg.data[2]) << 8) + msg.data[3]) / 65536.0F - 0.5F) * MAX_SPEED_RAD * 2.0F;
+    temp.torque = (float((uint16_t(msg.data[4]) << 8) + msg.data[5]) / 65536.0F - 0.5F) * MAX_TORQUE_NM * 2.0F;
     temp.temperature = float((uint16_t(msg.data[6]) << 8) + msg.data[7]) / 10.0F;
 
     return temp;
@@ -318,11 +318,11 @@ Motor_state Motor::Set_control_int(const uint16_t target_torque, const uint16_t 
 Motor_state Motor::Set_control(const float target_torque, const float target_angle, const float target_vel, const float Kp, const float Kd)
 {
     return Set_control_int(
-        float_to_uint(target_torque, -12.0F, 12.0F, 16),
+        float_to_uint(target_torque, -MAX_TORQUE_NM, MAX_TORQUE_NM, 16),
         float_to_uint(target_angle, -4.0F * M_PI, 4.0F * M_PI, 16),
-        float_to_uint(target_vel, -30.0F, 30.0F, 16),
-        float_to_uint(Kp, 0.0F, 500.0F, 16),
-        float_to_uint(Kd, 0.0F, 5.0F, 16));
+        float_to_uint(target_vel, -MAX_SPEED_RAD, MAX_SPEED_RAD, 16),
+        float_to_uint(Kp, 0.0F, 5000.0F, 16),
+        float_to_uint(Kd, 0.0F, 100.0F, 16));
 }
 
 float Motor::Read_parameter(const Motor_param index)
@@ -503,7 +503,7 @@ Motor_state Motor::Set_position(const float target_angle)
     if (curr_mode != Motor_mode::Position)
     {
         Set_mode(Motor_mode::Position);
-        Set_parameter(Motor_param::limit_spd, 25.0F);
+        Set_parameter(Motor_param::limit_spd, MAX_SPEED_RAD);
         // Set_parameter(Motor_param::imit_torque, 10.0F);
     }
     return Set_parameter(Motor_param::loc_ref, target_angle);
@@ -514,7 +514,7 @@ Motor_state Motor::Set_velocity(const float target_vel)
     if (curr_mode != Motor_mode::Velocity)
     {
         Set_mode(Motor_mode::Velocity);
-        Set_parameter(Motor_param::limit_cur, 23.0F);
+        Set_parameter(Motor_param::limit_cur, MAX_CURRENT_A);
     }
     return Set_parameter(Motor_param::spd_ref, target_vel);
 }
@@ -536,9 +536,9 @@ Motor_state Motor::Get_state()
     //     Set_parameter(Motor_param::limit_spd, 30.0F);
     // }
     // return Set_parameter(Motor_param::not_exist, 30.0F);
-    Set_parameter(Motor_param::limit_spd, 30.0F);
-    Set_parameter(Motor_param::imit_torque, 10.0F);
-    return Set_parameter(Motor_param::limit_cur, 27.0F);
+    Set_parameter(Motor_param::limit_spd, MAX_SPEED_RAD);
+    Set_parameter(Motor_param::imit_torque, MAX_TORQUE_NM);
+    return Set_parameter(Motor_param::limit_cur, MAX_CURRENT_A);
 }
 
 

@@ -19,6 +19,10 @@
 
 #define MOTOR_TRIG_PIN 15
 
+constexpr float MAX_TORQUE_NM = 36.0F; // max torque in N.m
+constexpr float MAX_SPEED_RAD = 50.0F; // max speed in rad/s
+constexpr float MAX_CURRENT_A = 57.0F; // max current in A
+
 constexpr uint16_t XIAOMI_DEFAULT_MOTOR_CAN_ID = 0x7F;
 
 // CAN ID for ESP32
