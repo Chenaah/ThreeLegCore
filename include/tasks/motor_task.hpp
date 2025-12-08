@@ -34,6 +34,7 @@ namespace Task {
     extern const float DELTA_T;
 
     namespace MotorTask {
+        extern float wrap_offset;  // K*2π offset to wrap motor position to (-π, π)
         void run(void *pvParameters);
     }
 }

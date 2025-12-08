@@ -174,15 +174,15 @@ namespace Task {
             data_to_send.switch_off = switch_off_request;
             data_to_send.last_rcv_timestamp = last_rcv_timestamp;
             data_to_send.info = dequeue(info_queue);
-            // Motor data
-            data_to_send.motor.pos = (st.angle - offset);
-            data_to_send.motor.large_pos = (large_motor_pos - offset);
+            // Motor data (apply wrap_offset to report wrapped position)
+            data_to_send.motor.pos = (st.angle + MotorTask::wrap_offset - offset);
+            data_to_send.motor.large_pos = (large_motor_pos + MotorTask::wrap_offset - offset);
             data_to_send.motor.vel = st.angle_v;
             data_to_send.motor.torque = st.torque;
             data_to_send.motor.voltage = voltage;
             data_to_send.motor.current = current;
             data_to_send.motor.temperature = st.temperature;
-            data_to_send.motor.error0 = motor_error;
+            data_to_send.motor.error0 = motor_error; // mode & error
             data_to_send.motor.error1 = motor_error2;
             // IMU data
             data_to_send.imu.orientation.x = euler_imu[0];

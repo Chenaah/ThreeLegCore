@@ -22,7 +22,7 @@ namespace Task {
     std::queue<int> info_queue;
 
     // Config
-    float offset = -1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
+    float offset = 0; //-1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
     const float DELTA_T = 100; // 20 (ms)
 
     namespace MotorTask {
@@ -31,6 +31,15 @@ namespace Task {
         ButterworthFilter filter(20, 100);
         int motor_running = false;
         unsigned long epi_start_time;
+        float wrap_offset = 0;  // K*2π offset to wrap motor position to (-π, π)
+
+        // Calculate K*2π offset so that (angle + K*2π) is in (-π, π) range
+        float _calculate_wrap_offset(float angle) {
+            // Find K such that angle + K*2π is in (-π, π)
+            // K = -floor((angle + π) / (2π))
+            int k = -static_cast<int>(floor((angle + M_PI) / (2 * M_PI)));
+            return k * 2 * M_PI;
+        }
 
         bool _switch_on() {
             if (!digitalRead(MOTOR_TRIG_PIN) != motor_running) {
@@ -48,11 +57,74 @@ namespace Task {
 
         bool _safe() {
             bool safe = true;
-            if (!motor.calibrated){
-                safe = false;
-                enqueue(info_queue, 300);
-            }
+            // if (!motor.calibrated){
+            //     safe = false;
+            //     enqueue(info_queue, 300);
+            // }
             return safe;
+        }
+
+        void _disable(){
+            DEBUG_PRINT("motor.Disable()");
+            send_led_message(LED_MSG_MOTOR_OFF);
+            enqueue(info_queue, 302);
+            st = motor.Disable();
+            motor_running = false;
+        }
+
+        void _move_to_zero_safely(float kp = 5.0, float kd = 0.3) {
+            Serial.println("[Motor] Moving to zero position safely...");
+            
+            // Get current RAW motor position
+            st = motor.Get_state();
+            float rawStartPos = st.angle;
+            
+            // The target raw position when wrapped position = 0 is:
+            // wrapped = raw + wrap_offset => raw = wrapped - wrap_offset
+            // But we also have mechanical offset, so: raw_target = 0 - wrap_offset + offset
+            float rawTargetPos = -wrap_offset + offset;
+            
+            float wrappedStartPos = rawStartPos + wrap_offset;  // For logging
+            
+            Serial.printf("[Motor] Raw start: %.3f rad (wrapped: %.3f), Raw target: %.3f rad\n", 
+                          rawStartPos, wrappedStartPos, rawTargetPos);
+            
+            // Calculate distance in raw space
+            float directDistance = rawTargetPos - rawStartPos;
+            float totalDistance = abs(directDistance);
+            
+            Serial.printf("[Motor] Distance: %.3f rad (%.1f degrees), Direction: %s\n", 
+                           totalDistance, totalDistance * 180.0 / PI,
+                           directDistance > 0 ? "positive" : "negative");
+            
+            int steps = (int)(totalDistance / 0.02); // Move in ~0.02 rad increments
+            steps = max(steps, 10); // Minimum 10 steps for smooth motion
+            
+            // Interpolate from current raw position to target raw position
+            for (int i = 0; i <= steps; i++) {
+                float t = (float)i / (float)steps; // 0.0 to 1.0
+                float interpolatedRawPos = rawStartPos + directDistance * t;
+                
+                st = motor.Set_control(0, interpolatedRawPos, 0, kp, kd);
+                
+                // Print progress every 20 steps
+                if (i % 20 == 0 || i == steps) {
+                    st = motor.Get_state();
+                    Serial.printf("[Motor] Progress: %d%%, Raw: %.3f rad, Wrapped: %.3f rad\n", 
+                                 (i * 100) / steps, st.angle, st.angle + wrap_offset);
+                }
+                
+                vTaskDelay(pdMS_TO_TICKS(20)); // 50Hz control rate
+                
+                // Safety check: abort if motor encounters high torque (obstacle)
+                st = motor.Get_state();
+                if (abs(st.torque) > 15.0) {
+                    Serial.printf("[Motor] WARNING: High torque detected (%.2f), aborting safe move!\n", st.torque);
+                    return;
+                }
+            }
+            
+            Serial.println("[Motor] Reached zero position safely");
         }
 
         void _enable(){
@@ -62,15 +134,18 @@ namespace Task {
 
             st = motor.Enable();
             motor_running = true;
+            
+            // Calculate wrap_offset to pretend motor starts from (-π, π)
+            st = motor.Get_state();
+            wrap_offset = _calculate_wrap_offset(st.angle);
+            Serial.printf("[Motor] Enabled. Raw angle: %.3f rad, wrap_offset: %.3f rad (K=%d)\n", 
+                          st.angle, wrap_offset, (int)(wrap_offset / (2 * M_PI)));
+            
+            // Move to zero position safely after enabling
+            // vTaskDelay(pdMS_TO_TICKS(100)); // Wait for motor to stabilize
+            _move_to_zero_safely();
+            
             epi_start_time = millis();
-        }
-
-        void _disable(){
-            DEBUG_PRINT("motor.Disable()");
-            send_led_message(LED_MSG_MOTOR_OFF);
-            enqueue(info_queue, 302);
-            st = motor.Disable();
-            motor_running = false;
         }
 
         bool _check_remote_switch() {
@@ -92,7 +167,8 @@ namespace Task {
 
         void _step(float target_angle, float target_vel, float kp = 20, float kd = 0.5) {
             if (_safe())
-                st = motor.Set_control(0, target_angle + offset, target_vel, kp, kd);
+                // target_angle is in wrapped space, convert back to raw motor space
+                st = motor.Set_control(0, target_angle - wrap_offset + offset, target_vel, kp, kd);
            
         }
 
@@ -320,11 +396,12 @@ namespace Task {
             // motor.Set_parameter(Motor_param::limit_cur, 15.0F);
 
 
-            _disable();
+            // _disable();
             // _wait_for_switch_off();
-            _wait_for_switch_on();
-            _auto_calibrate();
+            // _wait_for_switch_on();
+            // _auto_calibrate();
             // _manual_calibrate();
+            motor.calibrated = true;
             
             _enable();
             // strcpy(log_info, "[Motor] motor auto enabled.");
@@ -385,10 +462,10 @@ namespace Task {
                 // st = motor.Get_state();
                 unsigned long time_get_state = micros() - t_checkpoint;
                 
-                Serial.printf("!! Motor Angle: %f\n", st.angle);
-                Serial.printf("!! Loop Frequency: %.2f Hz (Period: %.2f ms)\n", loop_freq, 1000.0/loop_freq);
-                Serial.printf("!! Timing breakdown (us): Delay=%lu, RemoteSwitch=%lu, Commands=%lu, Filter=%lu, Step=%lu, GetState=%lu\n",
-                              time_delay, time_remote_switch, time_check_commands, time_filter, time_step, time_get_state);
+                // Serial.printf("!! Motor Angle: %f\n", st.angle);
+                // Serial.printf("!! Loop Frequency: %.2f Hz (Period: %.2f ms)\n", loop_freq, 1000.0/loop_freq);
+                // Serial.printf("!! Timing breakdown (us): Delay=%lu, RemoteSwitch=%lu, Commands=%lu, Filter=%lu, Step=%lu, GetState=%lu\n",
+                //               time_delay, time_remote_switch, time_check_commands, time_filter, time_step, time_get_state);
                 
                 t_checkpoint = micros();
                 // _manage_monitor();
