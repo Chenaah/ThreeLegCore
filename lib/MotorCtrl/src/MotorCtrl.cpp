@@ -32,7 +32,7 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
     if (twai_transmit(TX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME)) != ESP_OK)
     {
         send_led_message(LED_MSG_MOTOR_ERROR);
-        DEBUG_PRINT("Oh no! Failed to talk to the motor! \n");
+        // DEBUG_PRINT("Oh no! Failed to talk to the motor! \n");
         calibrated = false;
         return 0;
     }

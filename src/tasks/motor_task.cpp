@@ -488,8 +488,8 @@ namespace Task {
                 unsigned long time_check_safety = micros() - t_checkpoint;
                 
                 unsigned long time_total = micros() - t_start;
-                Serial.printf("!! Timing continued (us): ManageMonitor=%lu, CheckHealth=%lu, CheckSafety=%lu, Total=%lu\n",
-                              time_manage_monitor, time_check_health, time_check_safety, time_total);
+                // Serial.printf("!! Timing continued (us): ManageMonitor=%lu, CheckHealth=%lu, CheckSafety=%lu, Total=%lu\n",
+                            //   time_manage_monitor, time_check_health, time_check_safety, time_total);
                 // vTaskDelayUntil(&lastWakeTime, dt); ????????????????????????
 
             }
