@@ -123,8 +123,8 @@ namespace Task {
             feedback.last_rcv_timestamp = last_rcv_timestamp;
             feedback.info = dequeue(info_queue);
             // Motor data (apply wrap_offset to report wrapped position)
-            feedback.motor.pos = (st.angle + MotorTask::wrap_offset - offset);
-            feedback.motor.large_pos = (large_motor_pos + MotorTask::wrap_offset - offset);
+            feedback.motor.pos = (st.angle + 0 - offset);
+            feedback.motor.large_pos = (large_motor_pos + 0 - offset);
             feedback.motor.vel = st.angle_v;
             feedback.motor.torque = st.torque;
             feedback.motor.voltage = voltage;

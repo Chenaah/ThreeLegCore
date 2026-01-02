@@ -24,6 +24,56 @@ uint16_t float_to_uint(const float x, const float x_min, const float x_max, cons
     return (uint16_t)((x1 - offset) * ((float)((1 << bits) - 1)) / span);
 }
 
+// Global storage for fault frames captured during CAN communication
+static Motor_fault_state g_last_fault = {};
+static bool g_fault_frame_received = false;
+
+/**
+ * @brief Parse a fault frame message into Motor_fault_state
+ */
+static void parse_fault_frame(const twai_message_t& rx_msg, Motor_fault_state* fault_out) {
+    // Debug: Print raw CAN data
+    Serial.printf("[Fault] Raw CAN ID: 0x%08X\n", rx_msg.identifier);
+    Serial.printf("[Fault] Raw data: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                  rx_msg.data[0], rx_msg.data[1], rx_msg.data[2], rx_msg.data[3],
+                  rx_msg.data[4], rx_msg.data[5], rx_msg.data[6], rx_msg.data[7]);
+    
+    // Extract motor CAN_ID from bits 23-0 of the identifier
+    fault_out->motor_id = rx_msg.identifier & 0xFFFF;
+    
+    // Fault flag from bits 0-3 of Byte 0
+    fault_out->fault_flag = rx_msg.data[0] & 0x0F;
+    
+    // Extract fault bits from Byte 0, Byte 1, and Byte 2 (combined as 24-bit value)
+    uint32_t fault_bits = (uint32_t(rx_msg.data[2]) << 16) | 
+                          (uint32_t(rx_msg.data[1]) << 8) | 
+                          rx_msg.data[0];
+    
+    Serial.printf("[Fault] fault_bits (24-bit): 0x%06X\n", fault_bits);
+    
+    fault_out->phase_a_overflow = (fault_bits >> 16) & 0x01;        // bit16
+    fault_out->overload_fault = (fault_bits >> 8) & 0xFF;           // bit15-8
+    fault_out->encoder_not_calibrated = (fault_bits >> 7) & 0x01;   // bit7
+    fault_out->phase_c_overflow = (fault_bits >> 5) & 0x01;         // bit5
+    fault_out->phase_b_overflow = (fault_bits >> 4) & 0x01;         // bit4
+    fault_out->over_voltage = (fault_bits >> 3) & 0x01;             // bit3
+    fault_out->under_voltage = (fault_bits >> 2) & 0x01;            // bit2
+    fault_out->driver_chip_fault = (fault_bits >> 1) & 0x01;        // bit1
+    fault_out->motor_over_temp = fault_bits & 0x01;                 // bit0
+    
+    // Warning values from bytes 4-7
+    fault_out->warning_byte4 = rx_msg.data[4];
+    fault_out->warning_byte5 = rx_msg.data[5];
+    fault_out->warning_byte6 = rx_msg.data[6];
+    fault_out->warning_byte7 = rx_msg.data[7];
+    
+    // Temperature warning is bit0 of warning bytes
+    fault_out->temp_warning = (rx_msg.data[4] & 0x01) || 
+                              (rx_msg.data[5] & 0x01) || 
+                              (rx_msg.data[6] & 0x01) || 
+                              (rx_msg.data[7] & 0x01);
+}
+
 bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *const RX_msg_ptr)
 {
     // Clear RX buffer to avoid stale data
@@ -32,19 +82,39 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
     if (twai_transmit(TX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME)) != ESP_OK)
     {
         send_led_message(LED_MSG_MOTOR_ERROR);
-        // DEBUG_PRINT("Oh no! Failed to talk to the motor! \n");
+        DEBUG_PRINT("Oh no! Failed to talk to the motor! \n");
         calibrated = false;
         return 0;
     }
 
-    if (twai_receive(RX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME)) != ESP_OK)
-    {
-        DEBUG_PRINT("Failed to receive message\n");
-        calibrated = false;
-        return 0;
+    // Try to receive, but check if it's a fault frame
+    // If we get a fault frame, store it and try to receive again for the actual response
+    int max_retries = 3;
+    for (int i = 0; i < max_retries; i++) {
+        if (twai_receive(RX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME)) != ESP_OK)
+        {
+            DEBUG_PRINT("Failed to receive message\n");
+            calibrated = false;
+            return 0;
+        }
+        
+        // Check if this is a fault frame (Communication Type 21 = 0x15)
+        uint8_t msg_type = (RX_msg_ptr->identifier >> 24) & 0x1F;
+        if (msg_type == 0x15) {
+            // This is a fault frame - store it and try to receive again
+            parse_fault_frame(*RX_msg_ptr, &g_last_fault);
+            g_fault_frame_received = true;
+            DEBUG_PRINT("Fault frame captured during CAN_Transceive\n");
+            // Continue loop to get the actual response
+        } else {
+            // This is the expected response
+            return 1;
+        }
     }
-
-    return 1;
+    
+    // If we got here, we only received fault frames
+    DEBUG_PRINT("Only received fault frames, no response\n");
+    return 0;
 }
 
 uint64_t Motor::Init(const uint8_t Target_ID){
@@ -171,8 +241,8 @@ Motor_state Motor::Unpack(const twai_message_t msg)
     temp.mode = (msg.identifier >> 22) & 0x03;
 
     temp.angle = (float((uint16_t(msg.data[0]) << 8) + msg.data[1]) / 65536.0F - 0.5F) * 8.0F * M_PI;
-    temp.angle_v = (float((uint16_t(msg.data[2]) << 8) + msg.data[3]) / 65536.0F - 0.5F) * MAX_SPEED_RAD * 2.0F;
-    temp.torque = (float((uint16_t(msg.data[4]) << 8) + msg.data[5]) / 65536.0F - 0.5F) * MAX_TORQUE_NM * 2.0F;
+    temp.angle_v = (float((uint16_t(msg.data[2]) << 8) + msg.data[3]) / 65536.0F - 0.5F) * 60.0F;
+    temp.torque = (float((uint16_t(msg.data[4]) << 8) + msg.data[5]) / 65536.0F - 0.5F) * 24.0F;
     temp.temperature = float((uint16_t(msg.data[6]) << 8) + msg.data[7]) / 10.0F;
 
     return temp;
@@ -318,11 +388,11 @@ Motor_state Motor::Set_control_int(const uint16_t target_torque, const uint16_t 
 Motor_state Motor::Set_control(const float target_torque, const float target_angle, const float target_vel, const float Kp, const float Kd)
 {
     return Set_control_int(
-        float_to_uint(target_torque, -MAX_TORQUE_NM, MAX_TORQUE_NM, 16),
+        float_to_uint(target_torque, -12.0F, 12.0F, 16),
         float_to_uint(target_angle, -4.0F * M_PI, 4.0F * M_PI, 16),
-        float_to_uint(target_vel, -MAX_SPEED_RAD, MAX_SPEED_RAD, 16),
-        float_to_uint(Kp, 0.0F, 5000.0F, 16),
-        float_to_uint(Kd, 0.0F, 100.0F, 16));
+        float_to_uint(target_vel, -30.0F, 30.0F, 16),
+        float_to_uint(Kp, 0.0F, 500.0F, 16),
+        float_to_uint(Kd, 0.0F, 5.0F, 16));
 }
 
 float Motor::Read_parameter(const Motor_param index)
@@ -503,7 +573,7 @@ Motor_state Motor::Set_position(const float target_angle)
     if (curr_mode != Motor_mode::Position)
     {
         Set_mode(Motor_mode::Position);
-        Set_parameter(Motor_param::limit_spd, MAX_SPEED_RAD);
+        Set_parameter(Motor_param::limit_spd, 25.0F);
         // Set_parameter(Motor_param::imit_torque, 10.0F);
     }
     return Set_parameter(Motor_param::loc_ref, target_angle);
@@ -514,7 +584,7 @@ Motor_state Motor::Set_velocity(const float target_vel)
     if (curr_mode != Motor_mode::Velocity)
     {
         Set_mode(Motor_mode::Velocity);
-        Set_parameter(Motor_param::limit_cur, MAX_CURRENT_A);
+        Set_parameter(Motor_param::limit_cur, 23.0F);
     }
     return Set_parameter(Motor_param::spd_ref, target_vel);
 }
@@ -536,9 +606,48 @@ Motor_state Motor::Get_state()
     //     Set_parameter(Motor_param::limit_spd, 30.0F);
     // }
     // return Set_parameter(Motor_param::not_exist, 30.0F);
-    Set_parameter(Motor_param::limit_spd, MAX_SPEED_RAD);
-    Set_parameter(Motor_param::imit_torque, MAX_TORQUE_NM);
-    return Set_parameter(Motor_param::limit_cur, MAX_CURRENT_A);
+    Set_parameter(Motor_param::limit_spd, 30.0F);
+    Set_parameter(Motor_param::imit_torque, 10.0F);
+    return Set_parameter(Motor_param::limit_cur, 27.0F);
+}
+
+bool Motor::Check_Fault_Frame(Motor_fault_state* fault_out)
+{
+    // First, check if a fault was captured during CAN_Transceive
+    if (g_fault_frame_received) {
+        if (fault_out) {
+            *fault_out = g_last_fault;
+        }
+        g_fault_frame_received = false;  // Clear the flag
+        DEBUG_PRINT("Returning captured fault frame\n");
+        return true;
+    }
+    
+    // Also do a non-blocking check for any fault frames in the buffer
+    twai_message_t rx_msg;
+    
+    // Non-blocking receive - check if any message is available (timeout = 0)
+    if (twai_receive(&rx_msg, 0) != ESP_OK) {
+        return false; // No message available
+    }
+    
+    // Check if this is a fault feedback frame (Communication Type 21 = 0x15)
+    // Bits 28-24 contain the message type
+    uint8_t msg_type = (rx_msg.identifier >> 24) & 0x1F;
+    if (msg_type != 0x15) {
+        return false; // Not a fault frame
+    }
+    
+    // Parse and return the fault frame
+    if (fault_out) {
+        parse_fault_frame(rx_msg, fault_out);
+    }
+    
+    DEBUG_PRINT("Fault frame received from motor ");
+    DEBUG_PRINT(rx_msg.identifier & 0xFFFF);
+    DEBUG_PRINT("\n");
+    
+    return true;
 }
 
 

@@ -19,10 +19,6 @@
 
 #define MOTOR_TRIG_PIN 15
 
-constexpr float MAX_TORQUE_NM = 36.0F; // max torque in N.m
-constexpr float MAX_SPEED_RAD = 50.0F; // max speed in rad/s
-constexpr float MAX_CURRENT_A = 57.0F; // max current in A
-
 constexpr uint16_t XIAOMI_DEFAULT_MOTOR_CAN_ID = 0x7F;
 
 // CAN ID for ESP32
@@ -44,6 +40,40 @@ struct Motor_state
     float angle_v;     // 0~65535 -> -30 ~ 30rad/s
     float torque;      // 0~65535 -> -12 ~ 12 N.m
     float temperature; // temperature/10 = temperature in C
+};
+
+/**
+ * @brief struct to store fault feedback frame data (Communication Type 21)
+ * 
+ * @note This is actively transmitted by the motor when a fault occurs
+ * 
+ * 29-bit CAN Identifier:
+ *   Bits 28-24: Fixed value 21 (message type)
+ *   Bits 23-8: Motor CAN_ID (upper bits)
+ *   Bits 7-0: Motor CAN_ID (lower bits)
+ */
+struct Motor_fault_state
+{
+    uint16_t motor_id;            // CAN ID of the motor (from bits 23-0 of identifier)
+    uint8_t fault_flag;           // 0 = normal, non-zero = fault present (bits 0-3 of byte 0)
+    
+    // Fault bit definitions from Byte 0, Byte 1, Byte 2
+    bool phase_a_overflow;        // bit16: Phase-A current sampling overflow
+    uint8_t overload_fault;       // bit15-8: Overload fault
+    bool encoder_not_calibrated;  // bit7: Encoder not calibrated
+    bool phase_c_overflow;        // bit5: Phase-C current sampling overflow
+    bool phase_b_overflow;        // bit4: Phase-B current sampling overflow
+    bool over_voltage;            // bit3: Over-voltage fault
+    bool under_voltage;           // bit2: Under-voltage fault
+    bool driver_chip_fault;       // bit1: Driver chip fault
+    bool motor_over_temp;         // bit0: Motor over-temperature fault (default 80°C)
+    
+    // Warning values from bytes 4-7
+    uint8_t warning_byte4;        // Warning indicators
+    uint8_t warning_byte5;        // Warning indicators
+    uint8_t warning_byte6;        // Warning indicators
+    uint8_t warning_byte7;        // Warning indicators
+    bool temp_warning;            // bit0: Motor over-temperature warning (default 75°C)
 };
 
 /**
@@ -141,7 +171,7 @@ public:
      * @param clear_error = 1, if we should clear error in this process
      * @return Motor_state
      */
-    Motor_state Disable(const bool clear_error = 0);
+    Motor_state Disable(const bool clear_error = 1);
 
     /**
      * @brief Set current motor position to zero point
@@ -282,6 +312,17 @@ public:
      * the rest.
      */
     Motor_state Set_control_int(const uint16_t target_torque, const uint16_t target_angle, const uint16_t target_vel, const uint16_t Kp, const uint16_t Kd);
+
+    /**
+     * @brief Check for fault feedback frame (Communication Type 21 = 0x15)
+     * 
+     * @param fault_out Pointer to store fault state if a fault frame is received
+     * @return true if a fault frame was received, false otherwise
+     * 
+     * @note This is a non-blocking call that checks if the motor has actively
+     * transmitted a fault feedback frame. Call this periodically in your main loop.
+     */
+    bool Check_Fault_Frame(Motor_fault_state* fault_out);
 
     bool calibrated = false;
 

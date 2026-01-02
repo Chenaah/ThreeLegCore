@@ -22,7 +22,7 @@ namespace Task {
     std::queue<int> info_queue;
 
     // Config
-    float offset = 0; //-1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
+    float offset = -1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
     const float DELTA_T = 100; // 20 (ms)
 
     namespace MotorTask {
@@ -31,14 +31,102 @@ namespace Task {
         ButterworthFilter filter(20, 100);
         int motor_running = false;
         unsigned long epi_start_time;
-        float wrap_offset = 0;  // K*2π offset to wrap motor position to (-π, π)
+        Motor_fault_state last_fault;  // Store last received fault
+        bool fault_received = false;   // Flag to indicate if a fault was received
 
-        // Calculate K*2π offset so that (angle + K*2π) is in (-π, π) range
-        float _calculate_wrap_offset(float angle) {
-            // Find K such that angle + K*2π is in (-π, π)
-            // K = -floor((angle + π) / (2π))
-            int k = -static_cast<int>(floor((angle + M_PI) / (2 * M_PI)));
-            return k * 2 * M_PI;
+        /**
+         * @brief Convert fault state to a 32-bit integer for transmission
+         * 
+         * Bit layout (matches datasheet):
+         *   bit16: Phase-A current sampling overflow
+         *   bit15-8: Overload fault (8 bits)
+         *   bit7: Encoder not calibrated
+         *   bit5: Phase-C current sampling overflow
+         *   bit4: Phase-B current sampling overflow
+         *   bit3: Over-voltage fault
+         *   bit2: Under-voltage fault
+         *   bit1: Driver chip fault
+         *   bit0: Motor over-temperature fault
+         * 
+         * Additional bits (upper 16 bits):
+         *   bit24: Temperature warning
+         *   bit20-17: Fault flag (4 bits)
+         * 
+         * @param fault The fault state struct
+         * @return uint32_t Packed fault bits
+         */
+        uint32_t fault_state_to_uint32(const Motor_fault_state& fault) {
+            uint32_t result = 0;
+            
+            // Lower 17 bits - match datasheet layout
+            result |= (fault.motor_over_temp ? 1 : 0) << 0;       // bit0
+            result |= (fault.driver_chip_fault ? 1 : 0) << 1;     // bit1
+            result |= (fault.under_voltage ? 1 : 0) << 2;         // bit2
+            result |= (fault.over_voltage ? 1 : 0) << 3;          // bit3
+            result |= (fault.phase_b_overflow ? 1 : 0) << 4;      // bit4
+            result |= (fault.phase_c_overflow ? 1 : 0) << 5;      // bit5
+            result |= (fault.encoder_not_calibrated ? 1 : 0) << 7; // bit7
+            result |= (uint32_t(fault.overload_fault) & 0xFF) << 8; // bit15-8
+            result |= (fault.phase_a_overflow ? 1 : 0) << 16;     // bit16
+            
+            // Upper bits - additional info
+            result |= (uint32_t(fault.fault_flag) & 0x0F) << 17;  // bit20-17: fault flag
+            result |= (fault.temp_warning ? 1 : 0) << 24;         // bit24: temp warning
+            
+            return result;
+        }
+
+        /**
+         * @brief Check for fault feedback frames from the motor
+         * @return true if a fault was detected
+         */
+        bool _check_fault_frame() {
+            Motor_fault_state fault;
+            if (motor.Check_Fault_Frame(&fault)) {
+                last_fault = fault;
+                fault_received = true;
+                
+                Serial.printf("[Motor] Fault frame received from motor %d!\n", fault.motor_id);
+                Serial.printf("[Motor] Fault flag: %d\n", fault.fault_flag);
+                
+                if (fault.fault_flag != 0) {
+                    // Log specific faults
+                    if (fault.motor_over_temp) {
+                        Serial.println("[Motor] FAULT: Motor over-temperature (>80°C)!");
+                    }
+                    if (fault.under_voltage) {
+                        Serial.println("[Motor] FAULT: Under-voltage!");
+                    }
+                    if (fault.over_voltage) {
+                        Serial.println("[Motor] FAULT: Over-voltage!");
+                    }
+                    if (fault.driver_chip_fault) {
+                        Serial.println("[Motor] FAULT: Driver chip fault!");
+                    }
+                    if (fault.encoder_not_calibrated) {
+                        Serial.println("[Motor] FAULT: Encoder not calibrated!");
+                    }
+                    if (fault.phase_a_overflow) {
+                        Serial.println("[Motor] FAULT: Phase-A current sampling overflow!");
+                    }
+                    if (fault.phase_b_overflow) {
+                        Serial.println("[Motor] FAULT: Phase-B current sampling overflow!");
+                    }
+                    if (fault.phase_c_overflow) {
+                        Serial.println("[Motor] FAULT: Phase-C current sampling overflow!");
+                    }
+                    if (fault.overload_fault) {
+                        Serial.printf("[Motor] FAULT: Overload fault (value: %d)!\n", fault.overload_fault);
+                    }
+                    if (fault.temp_warning) {
+                        Serial.println("[Motor] WARNING: Temperature warning (>75°C)!");
+                    }
+                    
+                    send_led_message(LED_MSG_MOTOR_ERROR);
+                    return true;
+                }
+            }
+            return false;
         }
 
         bool _switch_on() {
@@ -57,74 +145,11 @@ namespace Task {
 
         bool _safe() {
             bool safe = true;
-            // if (!motor.calibrated){
-            //     safe = false;
-            //     enqueue(info_queue, 300);
-            // }
-            return safe;
-        }
-
-        void _disable(){
-            DEBUG_PRINT("motor.Disable()");
-            send_led_message(LED_MSG_MOTOR_OFF);
-            enqueue(info_queue, 302);
-            st = motor.Disable();
-            motor_running = false;
-        }
-
-        void _move_to_zero_safely(float kp = 5.0, float kd = 0.3) {
-            Serial.println("[Motor] Moving to zero position safely...");
-            
-            // Get current RAW motor position
-            st = motor.Get_state();
-            float rawStartPos = st.angle;
-            
-            // The target raw position when wrapped position = 0 is:
-            // wrapped = raw + wrap_offset => raw = wrapped - wrap_offset
-            // But we also have mechanical offset, so: raw_target = 0 - wrap_offset + offset
-            float rawTargetPos = -wrap_offset + offset;
-            
-            float wrappedStartPos = rawStartPos + wrap_offset;  // For logging
-            
-            Serial.printf("[Motor] Raw start: %.3f rad (wrapped: %.3f), Raw target: %.3f rad\n", 
-                          rawStartPos, wrappedStartPos, rawTargetPos);
-            
-            // Calculate distance in raw space
-            float directDistance = rawTargetPos - rawStartPos;
-            float totalDistance = abs(directDistance);
-            
-            Serial.printf("[Motor] Distance: %.3f rad (%.1f degrees), Direction: %s\n", 
-                           totalDistance, totalDistance * 180.0 / PI,
-                           directDistance > 0 ? "positive" : "negative");
-            
-            int steps = (int)(totalDistance / 0.02); // Move in ~0.02 rad increments
-            steps = max(steps, 10); // Minimum 10 steps for smooth motion
-            
-            // Interpolate from current raw position to target raw position
-            for (int i = 0; i <= steps; i++) {
-                float t = (float)i / (float)steps; // 0.0 to 1.0
-                float interpolatedRawPos = rawStartPos + directDistance * t;
-                
-                st = motor.Set_control(0, interpolatedRawPos, 0, kp, kd);
-                
-                // Print progress every 20 steps
-                if (i % 20 == 0 || i == steps) {
-                    st = motor.Get_state();
-                    Serial.printf("[Motor] Progress: %d%%, Raw: %.3f rad, Wrapped: %.3f rad\n", 
-                                 (i * 100) / steps, st.angle, st.angle + wrap_offset);
-                }
-                
-                vTaskDelay(pdMS_TO_TICKS(20)); // 50Hz control rate
-                
-                // Safety check: abort if motor encounters high torque (obstacle)
-                st = motor.Get_state();
-                if (abs(st.torque) > 15.0) {
-                    Serial.printf("[Motor] WARNING: High torque detected (%.2f), aborting safe move!\n", st.torque);
-                    return;
-                }
+            if (!motor.calibrated){
+                safe = false;
+                enqueue(info_queue, 300);
             }
-            
-            Serial.println("[Motor] Reached zero position safely");
+            return safe;
         }
 
         void _enable(){
@@ -134,18 +159,15 @@ namespace Task {
 
             st = motor.Enable();
             motor_running = true;
-            
-            // Calculate wrap_offset to pretend motor starts from (-π, π)
-            st = motor.Get_state();
-            wrap_offset = _calculate_wrap_offset(st.angle);
-            Serial.printf("[Motor] Enabled. Raw angle: %.3f rad, wrap_offset: %.3f rad (K=%d)\n", 
-                          st.angle, wrap_offset, (int)(wrap_offset / (2 * M_PI)));
-            
-            // Move to zero position safely after enabling
-            // vTaskDelay(pdMS_TO_TICKS(100)); // Wait for motor to stabilize
-            _move_to_zero_safely();
-            
             epi_start_time = millis();
+        }
+
+        void _disable(){
+            DEBUG_PRINT("motor.Disable()");
+            send_led_message(LED_MSG_MOTOR_OFF);
+            enqueue(info_queue, 302);
+            st = motor.Disable();
+            motor_running = false;
         }
 
         bool _check_remote_switch() {
@@ -167,8 +189,7 @@ namespace Task {
 
         void _step(float target_angle, float target_vel, float kp = 20, float kd = 0.5) {
             if (_safe())
-                // target_angle is in wrapped space, convert back to raw motor space
-                st = motor.Set_control(0, target_angle - wrap_offset + offset, target_vel, kp, kd);
+                st = motor.Set_control(0, target_angle + offset, target_vel, kp, kd);
            
         }
 
@@ -396,12 +417,11 @@ namespace Task {
             // motor.Set_parameter(Motor_param::limit_cur, 15.0F);
 
 
-            // _disable();
+            _disable();
             // _wait_for_switch_off();
-            // _wait_for_switch_on();
-            // _auto_calibrate();
+            _wait_for_switch_on();
+            _auto_calibrate();
             // _manual_calibrate();
-            motor.calibrated = true;
             
             _enable();
             // strcpy(log_info, "[Motor] motor auto enabled.");
@@ -462,10 +482,10 @@ namespace Task {
                 // st = motor.Get_state();
                 unsigned long time_get_state = micros() - t_checkpoint;
                 
-                // Serial.printf("!! Motor Angle: %f\n", st.angle);
-                // Serial.printf("!! Loop Frequency: %.2f Hz (Period: %.2f ms)\n", loop_freq, 1000.0/loop_freq);
-                // Serial.printf("!! Timing breakdown (us): Delay=%lu, RemoteSwitch=%lu, Commands=%lu, Filter=%lu, Step=%lu, GetState=%lu\n",
-                //               time_delay, time_remote_switch, time_check_commands, time_filter, time_step, time_get_state);
+                Serial.printf("!! Motor Angle: %f\n", st.angle);
+                Serial.printf("!! Loop Frequency: %.2f Hz (Period: %.2f ms)\n", loop_freq, 1000.0/loop_freq);
+                Serial.printf("!! Timing breakdown (us): Delay=%lu, RemoteSwitch=%lu, Commands=%lu, Filter=%lu, Step=%lu, GetState=%lu\n",
+                              time_delay, time_remote_switch, time_check_commands, time_filter, time_step, time_get_state);
                 
                 t_checkpoint = micros();
                 // _manage_monitor();
@@ -473,8 +493,19 @@ namespace Task {
                 
                 DEBUG_PRINT("voltage");
                 DEBUG_PRINT(voltage);
-                motor_error = st.error_state; // motor.get_error();
-                // motor_error2 = motor.get_error();
+                motor_error = st.error_state;
+
+                // Check for fault feedback frames actively sent by the motor
+                t_checkpoint = micros();
+                if (_check_fault_frame()) {
+                    // Fault detected - handle it
+                    enqueue(info_queue, 316);  // Fault frame received info code
+                }
+                
+                // Pack fault state into motor_error2 for transmission
+                motor_error2 = fault_state_to_uint32(last_fault);
+                
+                unsigned long time_fault_check = micros() - t_checkpoint;
 
                 t_checkpoint = micros();
                 _check_health();
@@ -488,8 +519,8 @@ namespace Task {
                 unsigned long time_check_safety = micros() - t_checkpoint;
                 
                 unsigned long time_total = micros() - t_start;
-                // Serial.printf("!! Timing continued (us): ManageMonitor=%lu, CheckHealth=%lu, CheckSafety=%lu, Total=%lu\n",
-                            //   time_manage_monitor, time_check_health, time_check_safety, time_total);
+                Serial.printf("!! Timing continued (us): ManageMonitor=%lu, CheckHealth=%lu, FaultCheck=%lu, CheckSafety=%lu, Total=%lu\n",
+                              time_manage_monitor, time_check_health, time_fault_check, time_check_safety, time_total);
                 // vTaskDelayUntil(&lastWakeTime, dt); ????????????????????????
 
             }
