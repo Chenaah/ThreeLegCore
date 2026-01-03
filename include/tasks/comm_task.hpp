@@ -16,7 +16,7 @@
 #define SERVER_PORT 6666
 #define CLIENT_PORT 6666
 
-struct ReceivedData {
+struct MotorCommand {
     float target;
     float target_vel;
     float kp;
@@ -27,6 +27,9 @@ struct ReceivedData {
     int restart;
     float timestamp;
 };
+
+// Legacy alias for compatibility
+using ReceivedData = MotorCommand;
 
 struct MotorData {
     float pos;
@@ -57,7 +60,7 @@ struct ErrorData{
     int reset_reason1;
 };
 
-struct SentData {
+struct SensorData {
     int module_id;
     int receive_dt;
     int timestamp;
@@ -67,7 +70,11 @@ struct SentData {
     MotorData motor;
     IMUData imu;
     ErrorData error;
+    float goal_distance;  // Distance to goal (meters), updated externally
 };
+
+// Legacy alias for compatibility
+using SentData = SensorData;
 
 
 namespace Task {
@@ -75,10 +82,11 @@ namespace Task {
 
     namespace CommTask {
         extern bool connected;
-        extern ReceivedData received_data;
-        extern SentData data_to_send;
+        extern MotorCommand received_data;
+        extern SensorData data_to_send;
         extern float last_rcv_timestamp;
         extern uint64_t receive_dt;
+        extern float goal_distance;  // Goal distance to be set externally
 
         void run(void *pvParameters);
     }

@@ -3,8 +3,8 @@
 #include "motor_control_messages.hpp"
 
 // Use type aliases for motor_control namespace types
-using CapySentData = motor_control::SentData;
-using CapyReceivedData = motor_control::ReceivedData;
+using CapySensorData = motor_control::SensorData;
+using CapyMotorCommand = motor_control::MotorCommand;
 
 namespace Task {
 
@@ -12,11 +12,12 @@ namespace Task {
 
         // Pub/Sub components
         cpy::Node* node = nullptr;
-        cpy::Publisher<CapySentData>* feedbackPub = nullptr;
-        cpy::Subscription<CapyReceivedData>* commandSub = nullptr;
+        cpy::Publisher<CapySensorData>* feedbackPub = nullptr;
+        cpy::Subscription<CapyMotorCommand>* commandSub = nullptr;
 
-        ReceivedData received_data;
-        SentData data_to_send;
+        MotorCommand received_data;
+        SensorData data_to_send;
+        float goal_distance = 0.233f;  // Goal distance to be set externally
 
         bool connected = false;
 
@@ -27,7 +28,7 @@ namespace Task {
         int reset_reason1 = rtc_get_reset_reason(1);
 
         // Callback for received commands
-        void _on_command_received(const CapyReceivedData& cmd) {
+        void _on_command_received(const CapyMotorCommand& cmd) {
             uint64_t start_time = esp_timer_get_time();
 
             // Copy to local struct for compatibility
@@ -91,7 +92,7 @@ namespace Task {
             node = new cpy::Node("motor_module");
 
             // Create publisher - sends feedback to server
-            feedbackPub = node->createPublisher<CapySentData>(
+            feedbackPub = node->createPublisher<CapySensorData>(
                 "/motor_feedback",
                 SERVER_IP,
                 SERVER_PORT
@@ -100,7 +101,7 @@ namespace Task {
             // Create subscriber - listens for commands on a DIFFERENT port
             // Note: Must use a different port than SERVER_PORT for receiving
             const uint16_t COMMAND_PORT = 6667;
-            commandSub = node->createSubscription<CapyReceivedData>(
+            commandSub = node->createSubscription<CapyMotorCommand>(
                 "/motor_cmd",
                 _on_command_received,
                 COMMAND_PORT
@@ -114,7 +115,7 @@ namespace Task {
         void _send_data() {
             uint64_t timestamp = esp_timer_get_time();
 
-            CapySentData feedback;
+            CapySensorData feedback;
             
             feedback.module_id = module_id;
             feedback.receive_dt = receive_dt;
@@ -149,6 +150,9 @@ namespace Task {
             // Error data
             feedback.error.reset_reason0 = reset_reason0;
             feedback.error.reset_reason1 = reset_reason1;
+            
+            // Goal distance (set externally)
+            feedback.goal_distance = goal_distance;
 
             // Copy to local struct for compatibility
             data_to_send.module_id = feedback.module_id;
@@ -166,6 +170,7 @@ namespace Task {
             data_to_send.motor.temperature = feedback.motor.temperature;
             data_to_send.motor.error0 = feedback.motor.error0;
             data_to_send.motor.error1 = feedback.motor.error1;
+            data_to_send.goal_distance = feedback.goal_distance;
 
             // Publish feedback
             feedbackPub->publish(feedback);
