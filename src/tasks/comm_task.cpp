@@ -131,8 +131,14 @@ namespace Task {
             feedback.motor.voltage = voltage;
             feedback.motor.current = current;
             feedback.motor.temperature = st.temperature;
-            feedback.motor.error0 = motor_error;
-            feedback.motor.error1 = motor_error2;
+            // Motor error: 6 bits of error flags from st.error_state
+            feedback.motor.motor_error = st.error_state & 0x3F;
+            // Motor mode: 0=Reset/Off, 1=Calibration, 2=Active/On
+            // If motor is not calibrated, force mode to 1 (Calibration)
+            feedback.motor.motor_mode = motor_calibrated ? ((st.error_state >> 6) & 0x03) : 1;
+            // feedback.motor.motor_mode = ((st.error_state >> 6) & 0x03);
+            // Driver error: packed fault state from driver chip
+            feedback.motor.driver_error = motor_error2;
             // IMU data
             feedback.imu.orientation.x = euler_imu[0];
             feedback.imu.orientation.y = euler_imu[1];
@@ -153,6 +159,12 @@ namespace Task {
             
             // Goal distance (set externally)
             feedback.goal_distance = goal_distance;
+            
+            // UWB distances (placeholder - will be updated with actual UWB data)
+            feedback.uwb.d0 = 0.0f;
+            feedback.uwb.d1 = 0.0f;
+            feedback.uwb.d2 = 0.0f;
+            feedback.uwb.d3 = 0.0f;
 
             // Copy to local struct for compatibility
             data_to_send.module_id = feedback.module_id;
@@ -168,9 +180,14 @@ namespace Task {
             data_to_send.motor.voltage = feedback.motor.voltage;
             data_to_send.motor.current = feedback.motor.current;
             data_to_send.motor.temperature = feedback.motor.temperature;
-            data_to_send.motor.error0 = feedback.motor.error0;
-            data_to_send.motor.error1 = feedback.motor.error1;
+            data_to_send.motor.motor_error = feedback.motor.motor_error;
+            data_to_send.motor.motor_mode = feedback.motor.motor_mode;
+            data_to_send.motor.driver_error = feedback.motor.driver_error;
             data_to_send.goal_distance = feedback.goal_distance;
+            data_to_send.uwb.d0 = feedback.uwb.d0;
+            data_to_send.uwb.d1 = feedback.uwb.d1;
+            data_to_send.uwb.d2 = feedback.uwb.d2;
+            data_to_send.uwb.d3 = feedback.uwb.d3;
 
             // Publish feedback
             feedbackPub->publish(feedback);

@@ -12,7 +12,7 @@
 
 #define WIFI_SSID "Xenobot" //"RovingXenobot" //"Device-Northwestern" //"NUMSR" //  
 #define WIFI_PW "Xenobotlab" // "RovingXenobot" //"" // "robotics!" // 
-#define SERVER_IP "129.105.69.100" //"192.168.1.57" // "129.105.69.100" // "129.105.69.124" //
+#define SERVER_IP "129.105.69.100" //"129.105.73.235" //"129.105.73.251" //"192.168.1.57" // "129.105.69.100" // "129.105.69.124" //
 #define SERVER_PORT 6666
 #define CLIENT_PORT 6666
 
@@ -39,8 +39,9 @@ struct MotorData {
     float voltage;
     float current;
     int temperature;
-    int error0;
-    int error1;
+    int motor_error;    // Motor error flags (6 bits)
+    int motor_mode;     // Motor mode (0=Reset/Off, 1=Calibration, 2=Active/On)
+    int driver_error;   // Driver chip error/fault state
 };
 
 struct IMUOrientation{float x; float y; float z;};
@@ -60,6 +61,13 @@ struct ErrorData{
     int reset_reason1;
 };
 
+struct UWBDistances {
+    float d0;  // Distance to anchor 0 (meters)
+    float d1;  // Distance to anchor 1 (meters)
+    float d2;  // Distance to anchor 2 (meters)
+    float d3;  // Distance to anchor 3 (meters)
+};
+
 struct SensorData {
     int module_id;
     int receive_dt;
@@ -71,6 +79,7 @@ struct SensorData {
     IMUData imu;
     ErrorData error;
     float goal_distance;  // Distance to goal (meters), updated externally
+    UWBDistances uwb;     // UWB distance measurements
 };
 
 // Legacy alias for compatibility

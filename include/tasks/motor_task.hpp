@@ -22,6 +22,7 @@ namespace Task {
     extern uint32_t motor_error2;
     extern float large_motor_pos;
     extern std::queue<int> info_queue;
+    extern bool motor_calibrated;  // Motor calibration status
 
     extern float target_pos;
     extern float target_vel;

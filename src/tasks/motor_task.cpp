@@ -20,6 +20,7 @@ namespace Task {
     float command_kd = 0;
     int enable_filter = 1;
     std::queue<int> info_queue;
+    bool motor_calibrated = false;  // Motor calibration status
 
     // Config
     float offset = -1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
@@ -350,14 +351,15 @@ namespace Task {
                 _find_limit_and_set_zero(-5, -0.1);
                 offset = 0;
             }
-
             motor.calibrated = true;
+
             MonitorTask::set_channel(ADC_CHANNEL_VOLTAGE);
             enqueue(info_queue, 309);
             // vTaskDelay(pdMS_TO_TICKS(100));
             _enable();
             if (offset != 0)
                 _move_to_middle();
+            motor_calibrated = true;  // Sync calibration status
         }
 
         void _manual_calibrate(){
@@ -371,6 +373,7 @@ namespace Task {
             enqueue(info_queue, 311);
             vTaskDelay(pdMS_TO_TICKS(100));
             _move_to_middle();
+            motor_calibrated = true;  // Sync calibration status
 
         }
 
