@@ -3,6 +3,7 @@
 #include "tasks/imu_task.hpp"
 #include "tasks/comm_task.hpp"
 #include "tasks/monitor_task.hpp"
+#include "tasks/uwb_task.hpp"
 #include "tasks/utils.hpp"
 #include "identity.hpp"
 #include <esp_task_wdt.h>

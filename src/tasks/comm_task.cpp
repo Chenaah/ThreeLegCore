@@ -157,11 +157,15 @@ namespace Task {
             feedback.error.reset_reason0 = reset_reason0;
             feedback.error.reset_reason1 = reset_reason1;
             
-            // Goal distance (set externally)
+            // Update goal_distance with UWB measurement if available
+            float uwb_dist = Task::UWBTask::getDistance();
+            if (uwb_dist > 0.0f) {
+                goal_distance = uwb_dist;
+            }
             feedback.goal_distance = goal_distance;
             
-            // UWB distances (placeholder - will be updated with actual UWB data)
-            feedback.uwb.d0 = 0.0f;
+            // UWB distances - use measured distance for d0, others reserved for multi-anchor
+            feedback.uwb.d0 = (uwb_dist > 0.0f) ? uwb_dist : 0.0f;
             feedback.uwb.d1 = 0.0f;
             feedback.uwb.d2 = 0.0f;
             feedback.uwb.d3 = 0.0f;
