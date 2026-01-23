@@ -280,8 +280,6 @@ void BNO08x_clear_tare(BNO08x *device);
 bool BNO08x_data_available(BNO08x *device);
 bool BNO08x_register_cb(BNO08x *device, bno08x_cb_fxn_t cb_fxn);
 
-uint32_t BNO08x_get_time_stamp(BNO08x *device);
-
 void BNO08x_get_magf(BNO08x *device, float *x, float *y, float *z, uint8_t *accuracy);
 float BNO08x_get_magf_X(BNO08x *device);
 float BNO08x_get_magf_Y(BNO08x *device);

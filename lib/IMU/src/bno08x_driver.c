@@ -126,7 +126,7 @@ void BNO08x_init(BNO08x *device, BNO08x_config_t *imu_config)
     // check if GPIO ISR service has been installed (only has to be done once regardless of SPI slaves being used)
     if (!bno08x_isr_service_installed)
     {
-        gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_IRAM); // install isr service
+        gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1); // install isr service
         bno08x_isr_service_installed = true;
     }
 
@@ -1716,16 +1716,6 @@ float BNO08x_q_to_float(int16_t fixed_point_value, uint8_t q_point)
     float q_float = fixed_point_value;
     q_float *= powf(2, (float)q_point * -1);
     return (q_float);
-}
-
-/**
- * @brief Return timestamp of most recent report.
- *
- * @return void, nothing to return
- */
-uint32_t BNO08x_get_time_stamp(BNO08x *device)
-{
-    return device->time_stamp;
 }
 
 /**

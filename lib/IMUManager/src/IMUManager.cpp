@@ -94,6 +94,12 @@ namespace IMUManager
 
         // Angular velocity doesn't need rotation extrapolation as it's the reference
 
+        // set timestamp of all components to current time
+        // but do not set last_data_time_us here
+        extrapolated.quaternion_timestamp_us = current_time_us;
+        extrapolated.acceleration_timestamp_us = current_time_us;
+        extrapolated.angular_velocity_timestamp_us = current_time_us;
+
         return extrapolated;
     }
 
@@ -191,7 +197,8 @@ namespace IMUManager
             data.acceleration_timestamp_us = BNO08x_get_accel_timestamp_us(&imu);
         } while (count != BNO08x_get_accel_update_count(&imu));
 
-        data.sensor_timestamp_us = BNO08x_get_time_stamp(&imu);
+        data.last_data_time_us = std::max({data.quaternion_timestamp_us, data.acceleration_timestamp_us, data.angular_velocity_timestamp_us});
+
         return data;
     }
 

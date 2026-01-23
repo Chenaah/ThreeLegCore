@@ -52,9 +52,9 @@ void setup() {
     // UWB has higher priority for timing sensitivity (priority 2)
     xTaskCreatePinnedToCore(Task::UWBTask::run, "UWB_Task", 8192, nullptr, 2, &xHandle, 1);
     xTaskCreatePinnedToCore(Task::IMUTask::run, "IMU_Task", 10000, nullptr, 1, &xHandle, 1);
-    xTaskCreatePinnedToCore(Task::MotorTask::run, "Motor_Task", 10000, nullptr, 1, &xHandle, 1);
-    xTaskCreatePinnedToCore(Task::CommTask::run, "Comm_Task", 10000, nullptr, 0, &xHandle, 0);
-    xTaskCreatePinnedToCore(Task::MonitorTask::run, "Monitor_Task", 10000, nullptr, 0, &xHandle, 0);
+    // xTaskCreatePinnedToCore(Task::MotorTask::run, "Motor_Task", 10000, nullptr, 1, &xHandle, 1);
+    // xTaskCreatePinnedToCore(Task::CommTask::run, "Comm_Task", 10000, nullptr, 0, &xHandle, 0);
+    // xTaskCreatePinnedToCore(Task::MonitorTask::run, "Monitor_Task", 10000, nullptr, 0, &xHandle, 0);
 
     vTaskDelete(NULL);
 }

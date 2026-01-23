@@ -39,9 +39,7 @@ namespace IMUManager
         int64_t quaternion_timestamp_us;
         int64_t acceleration_timestamp_us;
         int64_t angular_velocity_timestamp_us;
-
-        // Sensor timestamp from BNO08x internal clock (microseconds)
-        uint32_t sensor_timestamp_us;
+        int64_t last_data_time_us; // Timestamp of the last data update (microseconds)
     };
 
     /**

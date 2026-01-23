@@ -159,6 +159,7 @@ namespace Task {
             
             // Update goal_distance with UWB measurement if available
             float uwb_dist = Task::UWBTask::getDistance();
+            Serial.print("UWB Distance: "); Serial.println(uwb_dist);
             if (uwb_dist > 0.0f) {
                 goal_distance = uwb_dist;
             }

@@ -5,6 +5,8 @@
 
 #include "DW1000Responder.hpp"
 #include "DW1000Common.hpp"
+#include <array>
+#include <utility>
 
 extern "C"
 {
@@ -18,6 +20,24 @@ namespace UWBRanging
     namespace Responder
     {
         using namespace UWBRanging;
+
+        static float correct_distance(float measured)
+        {
+            if (measured <= 0.3f)
+            {
+                return 0.0f;
+            }
+            else if (measured <= 1.5f)
+            {
+                return (measured - 0.3f) / 1.2f * 0.7f;
+            }
+            else
+            {
+                return measured - 0.8f;
+            }
+
+            // return measured;
+        }
 
         /* State variables */
         static bool initialized = false;
@@ -37,6 +57,10 @@ namespace UWBRanging
 
         /* Queue configuration */
         constexpr uint8_t QUEUE_SIZE = 10;
+
+        /* Latest data and optimistic lock */
+        RangingResult latest_result;
+        uint32_t result_update_count = 0;
 
         /* State machine */
         enum State
@@ -81,19 +105,20 @@ namespace UWBRanging
             double tof = tof_dtu * DWT_TIME_UNITS;
             double distance = tof * SPEED_OF_LIGHT;
 
+            /* Update latest result with optimistic lock */
+            latest_result.distance_m = correct_distance(distance);
+            latest_result.measurement_time_us = esp_timer_get_time();
+            result_update_count++;
+
             /* Send result to queue */
             if (result_queue != nullptr)
             {
-                RangingResult result;
-                result.distance_m = distance;
-                result.measurement_time_us = esp_timer_get_time();
-
-                if (xQueueSend(result_queue, &result, 0) != pdTRUE)
+                if (xQueueSend(result_queue, &latest_result, 0) != pdTRUE)
                 {
                     /* Queue full, remove oldest and retry */
                     RangingResult dummy;
                     xQueueReceive(result_queue, &dummy, 0);
-                    xQueueSend(result_queue, &result, 0);
+                    xQueueSend(result_queue, &latest_result, 0);
                 }
             }
 
@@ -369,6 +394,20 @@ namespace UWBRanging
         bool IsActive()
         {
             return initialized && running;
+        }
+
+        RangingResult GetLatestResult()
+        {
+            RangingResult result;
+            uint32_t before_count;
+
+            do
+            {
+                before_count = result_update_count;
+                result = latest_result;
+            } while (before_count != result_update_count);
+
+            return result;
         }
 
     } // namespace Responder
