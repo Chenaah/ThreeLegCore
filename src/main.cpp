@@ -45,6 +45,12 @@ void setup() {
     if (!Task::UWBTask::initialize(DWM1000_CS, DWM1000_IRQ, DWM1000_RST)) {
         Serial.println("ERROR: UWB initialization failed!");
     }
+
+    // Initialize IMU via IMUManager (after UWB init, following NewRollbot's order)
+    // Parameters: CS, INT, RST
+    if (!Task::IMUTask::initialize(BNO08X_CS, BNO08X_INT, BNO08X_RST)) {
+        Serial.println("ERROR: IMU initialization failed!");
+    }
     
     TaskHandle_t xHandle;
 
