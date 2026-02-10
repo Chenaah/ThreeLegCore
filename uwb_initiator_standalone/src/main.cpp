@@ -3,7 +3,7 @@
  * @brief UWB DS-TWR Initiator Test
  *
  * This test initializes the DW1000 as an initiator and triggers
- * ranging exchanges every 20ms.
+ * ranging exchanges every 100ms.
  */
 
 #include <Arduino.h>
@@ -34,9 +34,9 @@ void setup()
         .sclk_io_num = (gpio_num_t)SPI_CLK_PIN,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 1024,
+        .max_transfer_sz = 4092,
         .flags = 0,
-        .intr_flags = 0};
+        .intr_flags = ESP_INTR_FLAG_LEVEL2};  // Match NewRollbot's config
 
     if (spi_bus_initialize(SPI2_HOST, &spi_bus_cfg, SPI_DMA_CH_AUTO) != ESP_OK)
     {
@@ -47,8 +47,8 @@ void setup()
         }
     }
 
-    // Initialize the UWB hardware
-    if (!UWBRanging::Initiator::Initialize(UWB_CS_PIN, UWB_IRQ_PIN, UWB_RST_PIN))
+    // Initialize the UWB hardware with explicit priorities (callback=6, ranging=2)
+    if (!UWBRanging::Initiator::Initialize(UWB_CS_PIN, UWB_IRQ_PIN, UWB_RST_PIN, 6, 2))
     {
         Serial.println("ERROR: Failed to initialize UWB Initiator!");
         while (1)
@@ -62,7 +62,7 @@ void setup()
     // Start ranging with 20ms interval
     UWBRanging::Initiator::Begin(20);
 
-    Serial.println("Ranging started with 20ms interval");
+    Serial.println("Ranging started with 100ms interval");
     Serial.println("Initiator is now sending ranging polls...\n");
 }
 

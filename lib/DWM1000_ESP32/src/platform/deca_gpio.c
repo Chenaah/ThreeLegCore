@@ -254,11 +254,26 @@ void dw1000_wake_up(void)
  * @fn dw1000_gpio_enable_irq()
  *
  * @brief Enable DW1000 IRQ
+ * 
+ * @note After enabling the interrupt, we check if the IRQ pin is already HIGH.
+ *       If so, we manually notify the ISR task because no rising edge will occur.
+ *       This fixes a race condition where events can be missed if they arrive
+ *       while the interrupt was disabled.
  */
 void dw1000_gpio_enable_irq(void)
 {
     dw1000_irq_enabled = true;
     gpio_intr_enable(gpio_pin_irq);
+    
+    // Check if IRQ pin is already HIGH - if so, we missed a rising edge
+    // and need to manually trigger the ISR task
+    if (gpio_get_level(gpio_pin_irq) == 1)
+    {
+        if (dw1000_irq_task_handle != NULL)
+        {
+            xTaskNotifyGive(dw1000_irq_task_handle);
+        }
+    }
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------

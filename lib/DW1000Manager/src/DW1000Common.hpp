@@ -16,9 +16,9 @@ extern "C"
 }
 
 /* Debug macros - disabled by default, set to 1 to enable */
-#define DEBUG_INITIALIZATION 0
-#define DEBUG_CALLBACKS 0
-#define DEBUG_STATUS_STATE 0
+#define DEBUG_INITIALIZATION 1
+#define DEBUG_CALLBACKS 1
+#define DEBUG_STATUS_STATE 1
 
 namespace UWBRanging
 {

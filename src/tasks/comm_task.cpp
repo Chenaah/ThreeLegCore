@@ -113,6 +113,8 @@ namespace Task {
         }
 
         void _send_data() {
+
+            Serial.println("Preparing to send feedback data...");
             uint64_t timestamp = esp_timer_get_time();
 
             CapySensorData feedback;
@@ -196,6 +198,7 @@ namespace Task {
 
             // Publish feedback
             feedbackPub->publish(feedback);
+            Serial.println("Published feedback data.");
         }
         
         void run(void *pvParameters) {

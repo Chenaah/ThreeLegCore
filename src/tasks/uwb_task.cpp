@@ -34,15 +34,14 @@ namespace Task {
             // Wait for system to stabilize
             vTaskDelay(pdMS_TO_TICKS(500));
 
-            // Start the responder
-            if (uwb_initialized) {
-                UWBRanging::Responder::Begin();
-                Serial.println("[UWB] Responder started, listening for ranging requests...");
-            } else {
+            // Check initialization - Begin() is called in main.cpp after IMU init
+            if (!uwb_initialized) {
                 Serial.println("[UWB] ERROR: Cannot start - not initialized!");
                 vTaskDelete(NULL);
                 return;
             }
+            
+            Serial.println("[UWB] Task started, listening for ranging results...");
 
             // Statistics tracking
             uint32_t measurement_count = 0;

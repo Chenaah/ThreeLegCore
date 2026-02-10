@@ -223,12 +223,22 @@ namespace UWBRanging
             current_state = RESP_SENT;
 
             int r = dwt_rxenable(DWT_START_RX_DELAYED);
-#if DEBUG_CALLBACKS
             if (r != DWT_SUCCESS)
             {
-                Serial.printf("[TXCONF] RX enable failed: 0x%08X @ %lld\n", cb_data->status, esp_timer_get_time());
-            }
+#if DEBUG_CALLBACKS
+                Serial.printf("[TXCONF] Delayed RX enable failed, trying immediate @ %lld\n", esp_timer_get_time());
 #endif
+                // Delayed RX failed (likely timing already passed), try immediate RX as fallback
+                r = dwt_rxenable(DWT_START_RX_IMMEDIATE);
+                if (r != DWT_SUCCESS)
+                {
+#if DEBUG_CALLBACKS
+                    Serial.printf("[TXCONF] RX enable failed completely, resetting @ %lld\n", esp_timer_get_time());
+#endif
+                    // Both failed, reset state machine to recover
+                    ResetState();
+                }
+            }
         }
 
         QueueHandle_t Initialize(uint8_t cs_pin, uint8_t int_pin, uint8_t rst_pin, uint32_t callback_priority)

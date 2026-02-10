@@ -1,6 +1,7 @@
 #include "tasks.hpp"
 #include "identity.hpp"
 #include <driver/spi_master.h>
+#include <DW1000Responder.hpp>
 
 void setup() {
     Serial.begin(115200);
@@ -17,7 +18,7 @@ void setup() {
         .quadhd_io_num = -1,
         .max_transfer_sz = 4092,
         .flags = 0,
-        .intr_flags = 0
+        .intr_flags = ESP_INTR_FLAG_LEVEL2  // Match NewRollbot's config for proper IRQ handling
     };
     esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
@@ -51,6 +52,11 @@ void setup() {
     if (!Task::IMUTask::initialize(BNO08X_CS, BNO08X_INT, BNO08X_RST)) {
         Serial.println("ERROR: IMU initialization failed!");
     }
+
+    // CRITICAL: Start UWB receiving AFTER IMU is fully initialized
+    // NewRollbot comment: "do not change the order, there's a reason why this is here!"
+    UWBRanging::Responder::Begin();
+    Serial.println("[UWB] Responder started receiving (after IMU init)");
     
     TaskHandle_t xHandle;
 

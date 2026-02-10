@@ -12,7 +12,7 @@
 
 #define WIFI_SSID "Xenobot" //"RovingXenobot" //"Device-Northwestern" //"NUMSR" //  
 #define WIFI_PW "Xenobotlab" // "RovingXenobot" //"" // "robotics!" // 
-#define SERVER_IP "129.105.69.100" //"129.105.73.235" //"129.105.73.251" //"192.168.1.57" // "129.105.69.100" // "129.105.69.124" //
+#define SERVER_IP "129.105.69.100" // "129.105.69.100" //"129.105.73.235" //"129.105.73.251" //"192.168.1.57" // "129.105.69.100" // "129.105.69.124" //
 #define SERVER_PORT 6666
 #define CLIENT_PORT 6666
 
