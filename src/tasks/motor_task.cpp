@@ -41,43 +41,22 @@ namespace Task {
         /**
          * @brief Convert fault state to a 32-bit integer for transmission
          * 
-         * Bit layout (matches datasheet):
-         *   bit16: Phase-A current sampling overflow
-         *   bit15-8: Overload fault (8 bits)
-         *   bit7: Encoder not calibrated
-         *   bit5: Phase-C current sampling overflow
-         *   bit4: Phase-B current sampling overflow
-         *   bit3: Over-voltage fault
-         *   bit2: Under-voltage fault
-         *   bit1: Driver chip fault
-         *   bit0: Motor over-temperature fault
+         * Bit layout (Deep Motor error flags):
+         *   bit0: Over voltage
+         *   bit1: Under voltage
+         *   bit2: Over current
+         *   bit3: Motor over temperature
+         *   bit4: Driver over temperature
+         *   bit5: CAN timeout
          * 
-         * Additional bits (upper 16 bits):
-         *   bit24: Temperature warning
-         *   bit20-17: Fault flag (4 bits)
+         * Upper 16 bits: raw error_code from motor
          * 
          * @param fault The fault state struct
          * @return uint32_t Packed fault bits
          */
         uint32_t fault_state_to_uint32(const Motor_fault_state& fault) {
-            uint32_t result = 0;
-            
-            // Lower 17 bits - match datasheet layout
-            result |= (fault.motor_over_temp ? 1 : 0) << 0;       // bit0
-            result |= (fault.driver_chip_fault ? 1 : 0) << 1;     // bit1
-            result |= (fault.under_voltage ? 1 : 0) << 2;         // bit2
-            result |= (fault.over_voltage ? 1 : 0) << 3;          // bit3
-            result |= (fault.phase_b_overflow ? 1 : 0) << 4;      // bit4
-            result |= (fault.phase_c_overflow ? 1 : 0) << 5;      // bit5
-            result |= (fault.encoder_not_calibrated ? 1 : 0) << 7; // bit7
-            result |= (uint32_t(fault.overload_fault) & 0xFF) << 8; // bit15-8
-            result |= (fault.phase_a_overflow ? 1 : 0) << 16;     // bit16
-            
-            // Upper bits - additional info
-            result |= (uint32_t(fault.fault_flag) & 0x0F) << 17;  // bit20-17: fault flag
-            result |= (fault.temp_warning ? 1 : 0) << 24;         // bit24: temp warning
-            
-            return result;
+            // The error_code from Deep Motor already has the correct bit layout
+            return (uint32_t)fault.error_code;
         }
 
         /**
@@ -90,40 +69,27 @@ namespace Task {
                 last_fault = fault;
                 fault_received = true;
                 
-                Serial.printf("[Motor] Fault frame received from motor %d!\n", fault.motor_id);
-                Serial.printf("[Motor] Fault flag: %d\n", fault.fault_flag);
+                Serial.printf("[Motor] Fault detected on motor %d! Error code: 0x%04X\n",
+                              fault.motor_id, fault.error_code);
                 
-                if (fault.fault_flag != 0) {
-                    // Log specific faults
-                    if (fault.motor_over_temp) {
-                        Serial.println("[Motor] FAULT: Motor over-temperature (>80°C)!");
+                if (fault.error_code != 0) {
+                    if (fault.over_voltage) {
+                        Serial.println("[Motor] FAULT: Over voltage!");
                     }
                     if (fault.under_voltage) {
-                        Serial.println("[Motor] FAULT: Under-voltage!");
+                        Serial.println("[Motor] FAULT: Under voltage!");
                     }
-                    if (fault.over_voltage) {
-                        Serial.println("[Motor] FAULT: Over-voltage!");
+                    if (fault.over_current) {
+                        Serial.println("[Motor] FAULT: Over current!");
                     }
-                    if (fault.driver_chip_fault) {
-                        Serial.println("[Motor] FAULT: Driver chip fault!");
+                    if (fault.motor_over_temp) {
+                        Serial.println("[Motor] FAULT: Motor over temperature!");
                     }
-                    if (fault.encoder_not_calibrated) {
-                        Serial.println("[Motor] FAULT: Encoder not calibrated!");
+                    if (fault.driver_over_temp) {
+                        Serial.println("[Motor] FAULT: Driver over temperature!");
                     }
-                    if (fault.phase_a_overflow) {
-                        Serial.println("[Motor] FAULT: Phase-A current sampling overflow!");
-                    }
-                    if (fault.phase_b_overflow) {
-                        Serial.println("[Motor] FAULT: Phase-B current sampling overflow!");
-                    }
-                    if (fault.phase_c_overflow) {
-                        Serial.println("[Motor] FAULT: Phase-C current sampling overflow!");
-                    }
-                    if (fault.overload_fault) {
-                        Serial.printf("[Motor] FAULT: Overload fault (value: %d)!\n", fault.overload_fault);
-                    }
-                    if (fault.temp_warning) {
-                        Serial.println("[Motor] WARNING: Temperature warning (>75°C)!");
+                    if (fault.can_timeout) {
+                        Serial.println("[Motor] FAULT: CAN timeout!");
                     }
                     
                     send_led_message(LED_MSG_MOTOR_ERROR);
