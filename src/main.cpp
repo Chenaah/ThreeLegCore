@@ -18,9 +18,9 @@ void setup() {
     
     TaskHandle_t xHandle;
 
-    xTaskCreatePinnedToCore(Task::IMUTask::run, "IMU_Task", 10000, nullptr, 0, &xHandle, 1);
-    xTaskCreatePinnedToCore(Task::MotorTask::run, "Motor_Task", 10000, nullptr, 0, &xHandle, 1);
-    xTaskCreatePinnedToCore(Task::CommTask::run, "Comm_Task", 10000, nullptr, 0, &xHandle, 0);
+    xTaskCreatePinnedToCore(Task::IMUTask::run, "IMU_Task", 10000, nullptr, 1, &xHandle, 1);
+    xTaskCreatePinnedToCore(Task::MotorTask::run, "Motor_Task", 10000, nullptr, 3, &xHandle, 1);   // Highest priority for stable 100 Hz
+    xTaskCreatePinnedToCore(Task::CommTask::run, "Comm_Task", 10000, nullptr, 2, &xHandle, 0);     // Medium priority for timely command delivery
     xTaskCreatePinnedToCore(Task::MonitorTask::run, "Monitor_Task", 10000, nullptr, 0, &xHandle, 0);
 
     vTaskDelete(NULL);

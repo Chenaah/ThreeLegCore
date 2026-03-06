@@ -22,14 +22,17 @@ namespace Task {
     std::queue<int> info_queue;
     bool motor_calibrated = false;  // Motor calibration status
 
+    // Command interpolator instance
+    CommandInterpolator cmd_interpolator;
+
     // Config
     float offset = -1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
-    const float DELTA_T = 100; // 20 (ms)
+    const float DELTA_T = CONTROL_LOOP_DT_MS; // Control loop period in ms
 
     namespace MotorTask {
 
         Motor motor;
-        ButterworthFilter filter(20, 100);
+        ButterworthFilter filter(15, CONTROL_LOOP_HZ);  // 15 Hz cutoff at 100 Hz sampling
         int motor_running = false;
         unsigned long epi_start_time;
         Motor_fault_state last_fault;  // Store last received fault
@@ -158,6 +161,8 @@ namespace Task {
             send_led_message(LED_MSG_MOTOR_ON);
             enqueue(info_queue, 301);
 
+            cmd_interpolator.reset();  // Clear stale waypoints before enabling
+            filter.reset();            // Clear filter state to avoid transient
             st = motor.Enable();
             motor_running = true;
             epi_start_time = millis();
@@ -167,6 +172,7 @@ namespace Task {
             DEBUG_PRINT("motor.Disable()");
             send_led_message(LED_MSG_MOTOR_OFF);
             enqueue(info_queue, 302);
+            cmd_interpolator.reset();  // Clear interpolator state on disable
             st = motor.Disable();
             motor_running = false;
         }
@@ -415,117 +421,94 @@ namespace Task {
             enqueue(info_queue, 313);
 
             motor.Set_mode(Motor_mode::Motion);
-            // motor.Set_parameter(Motor_param::limit_spd, 1.0F);
-            // motor.Set_parameter(Motor_param::imit_torque, 1.0F);
-            // motor.Set_parameter(Motor_param::limit_cur, 15.0F);
-
 
             _disable();
-            // _wait_for_switch_off();
             _wait_for_switch_on();
             _auto_calibrate();
-            // _manual_calibrate();
             
             _enable();
-            // strcpy(log_info, "[Motor] motor auto enabled.");
             
-            
+            // Use vTaskDelayUntil for deterministic 100 Hz timing
             TickType_t lastWakeTime = xTaskGetTickCount();
-            const TickType_t dt = pdMS_TO_TICKS(DELTA_T);
+            const TickType_t dt = pdMS_TO_TICKS(CONTROL_LOOP_DT_MS);
             
-            // For frequency measurement
+            // For frequency measurement and diagnostics
             unsigned long last_loop_time = micros();
             unsigned long loop_count = 0;
             float loop_freq = 0;
+            float loop_freq_filtered = CONTROL_LOOP_HZ; // EMA-filtered frequency
+            unsigned long last_print_time = millis();
+
+            // Torque rate limiter: prevent sudden torque spikes
+            float last_torque_cmd = 0.0f;
+            const float MAX_TORQUE_RATE = 50.0f * CONTROL_LOOP_DT_S; // max torque change per tick (N.m/tick)
 
             while (true) {
-                // Timing measurements
                 unsigned long t_start = micros();
-                unsigned long t_checkpoint;
                 
-                // esp_task_wdt_reset();
-                vTaskDelay(pdMS_TO_TICKS(DELAY_PERIOD));
-                t_checkpoint = micros();
-                unsigned long time_delay = t_checkpoint - t_start;
-                
-                // Calculate loop frequency
-                unsigned long current_time = micros();
-                unsigned long delta_time = current_time - last_loop_time;
-                last_loop_time = current_time;
-                loop_freq = 1000000.0 / delta_time; // Convert microseconds to Hz
-                loop_count++;
-
-                t_checkpoint = micros();
+                // === 1. Check remote switch & commands (lightweight) ===
                 _check_remote_switch();
-                unsigned long time_remote_switch = micros() - t_checkpoint;
-                
-                t_checkpoint = micros();
                 _check_commands();
-                unsigned long time_check_commands = micros() - t_checkpoint;
 
-                t_checkpoint = micros();
-                float filtered = 0;
+                // === 2. Get interpolated setpoints ===
+                float interp_pos, interp_vel, interp_kp, interp_kd;
+
+                if (cmd_interpolator.isTimedOut(COMMAND_TIMEOUT_MS)) {
+                    // Command timeout: hold last known position with moderate stiffness
+                    // This prevents the motor from drifting if communication drops
+                    interp_pos = target_pos;
+                    interp_vel = 0.0f;
+                    interp_kp = command_kp;
+                    interp_kd = command_kd;
+                } else {
+                    // Normal operation: get interpolated setpoint
+                    cmd_interpolator.sample(interp_pos, interp_vel, interp_kp, interp_kd);
+                }
+
+                // === 3. Apply Butterworth low-pass filter (optional) ===
+                float filtered_pos;
                 if (enable_filter)
-                    filtered = filter.filter(target_pos);
+                    filtered_pos = filter.filter(interp_pos);
                 else
-                    filtered = target_pos;
-                unsigned long time_filter = micros() - t_checkpoint;
-                
-                t_checkpoint = micros();
-                _step(filtered, target_vel, command_kp, command_kd);
-                unsigned long time_step = micros() - t_checkpoint;
-                // _step(filtered, target_vel, 12, 0.4);
-                // _step(filtered, 25, 0.8);
-                // _step(filtered, 20, 0.8);
+                    filtered_pos = interp_pos;
 
-                // large_motor_pos = motor.Read_parameter(Motor_param::mech_pos);
-                // large_motor_pos = motor.Read_parameter(Motor_param::mech_pos);
+                // === 4. Send command to motor ===
+                _step(filtered_pos, interp_vel, interp_kp, interp_kd);
 
-                t_checkpoint = micros();
-                // st = motor.Get_state();
-                unsigned long time_get_state = micros() - t_checkpoint;
-                
-                Serial.printf("!! Motor Angle: %f\n", st.angle);
-                Serial.printf("!! Loop Frequency: %.2f Hz (Period: %.2f ms)\n", loop_freq, 1000.0/loop_freq);
-                Serial.printf("!! Timing breakdown (us): Delay=%lu, RemoteSwitch=%lu, Commands=%lu, Filter=%lu, Step=%lu, GetState=%lu\n",
-                              time_delay, time_remote_switch, time_check_commands, time_filter, time_step, time_get_state);
-                
-                t_checkpoint = micros();
-                // _manage_monitor();
-                unsigned long time_manage_monitor = micros() - t_checkpoint;
-                
-                DEBUG_PRINT("voltage");
-                DEBUG_PRINT(voltage);
+                // === 5. Update motor error state ===
                 motor_error = st.error_state;
 
                 // Check for fault feedback frames actively sent by the motor
-                t_checkpoint = micros();
                 if (_check_fault_frame()) {
-                    // Fault detected - handle it
-                    enqueue(info_queue, 316);  // Fault frame received info code
+                    enqueue(info_queue, 316);
                 }
-                
-                // Pack fault state into motor_error2 for transmission
                 motor_error2 = fault_state_to_uint32(last_fault);
-                
-                unsigned long time_fault_check = micros() - t_checkpoint;
 
-                t_checkpoint = micros();
                 _check_health();
-                unsigned long time_check_health = micros() - t_checkpoint;
+                _check_safety();
+
+                // === 6. Diagnostics (throttled to ~2 Hz to reduce Serial overhead) ===
+                unsigned long current_time_us = micros();
+                unsigned long delta_time = current_time_us - last_loop_time;
+                last_loop_time = current_time_us;
+                loop_freq = 1000000.0f / delta_time;
+                loop_freq_filtered = 0.95f * loop_freq_filtered + 0.05f * loop_freq;
+                loop_count++;
+
+                unsigned long now_ms = millis();
+                if (now_ms - last_print_time >= 500) {
+                    last_print_time = now_ms;
+                    unsigned long time_total = micros() - t_start;
+                    Serial.printf("[Motor] f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f dt_us=%lu\n",
+                                  loop_freq_filtered, st.angle, filtered_pos, interp_vel,
+                                  interp_kp, interp_kd, time_total);
+                }
 
                 DEBUG_PRINT("Position");
                 DEBUG_PRINT(st.angle);
 
-                t_checkpoint = micros();
-                _check_safety();
-                unsigned long time_check_safety = micros() - t_checkpoint;
-                
-                unsigned long time_total = micros() - t_start;
-                Serial.printf("!! Timing continued (us): ManageMonitor=%lu, CheckHealth=%lu, FaultCheck=%lu, CheckSafety=%lu, Total=%lu\n",
-                              time_manage_monitor, time_check_health, time_fault_check, time_check_safety, time_total);
-                // vTaskDelayUntil(&lastWakeTime, dt); ????????????????????????
-
+                // === 7. Sleep until next tick (deterministic timing) ===
+                vTaskDelayUntil(&lastWakeTime, dt);
             }
         }
     }  // namespace MotorTask

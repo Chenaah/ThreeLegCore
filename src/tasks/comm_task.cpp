@@ -55,12 +55,22 @@ namespace Task {
             restart_command = received_data.restart;
             last_rcv_timestamp = received_data.timestamp;
 
+            // Push new waypoint into the interpolator for smooth 100 Hz control
+            cmd_interpolator.pushCommand(
+                received_data.target,
+                received_data.target_vel,
+                received_data.kp,
+                received_data.kd
+            );
+
             uint64_t end_time = esp_timer_get_time();
             receive_dt = end_time - start_time;
         }
 
         void _connect_to_wifi() {
             Serial.println("Connecting to WiFi...");
+            Serial.print("ESP MAC Address: ");
+            Serial.println(WiFi.macAddress());
 
             WiFi.setSleep(false);
             WiFi.disconnect(true);
