@@ -1,7 +1,60 @@
 #include "tasks.hpp"
+#include "LocalPolicy.hpp"
 
+// Forward declaration of the global policy instance defined in main.cpp
+extern LocalPolicy local_policy;
+
+// History buffer for local policy obs (gravity + gyro + dof_pos + dof_vel)
+// LOCAL_OBS_DIM=40 = 8 values/frame × 5 history frames
+static constexpr int LOCAL_FRAME_DIM = 8;   // gravity(3)+gyro(3)+pos(1)+vel(1)
+static constexpr int LOCAL_HIST_LEN  = 5;
+
+// Circular history ring: newest at [0], oldest at [LOCAL_HIST_LEN-1]
+static float local_obs_history[LOCAL_HIST_LEN][LOCAL_FRAME_DIM] = {};
+
+// Push a new frame into the history (shifts older frames back)
+static void push_local_obs_frame(const float frame[LOCAL_FRAME_DIM]) {
+    // Shift older frames: [0] <- [1], [1] <- [2], ...
+    for (int h = LOCAL_HIST_LEN - 1; h > 0; --h) {
+        for (int d = 0; d < LOCAL_FRAME_DIM; ++d)
+            local_obs_history[h][d] = local_obs_history[h - 1][d];
+    }
+    // Store newest frame at index 0
+    for (int d = 0; d < LOCAL_FRAME_DIM; ++d)
+        local_obs_history[0][d] = frame[d];
+}
+
+// Build the 40-dim local_obs array (oldest→newest, matching training layout)
+// Training layout: history.transpose(1,0,2).reshape(-1)
+//   → for module i: [frame_{H-1}, frame_{H-2}, ..., frame_0]
+// Our ring: history[0]=newest, history[H-1]=oldest  → iterate H-1 .. 0
+static std::array<float, LOCAL_OBS_DIM> build_local_obs() {
+    std::array<float, LOCAL_OBS_DIM> obs{};
+    for (int h = 0; h < LOCAL_HIST_LEN; ++h) {
+        // history index (H-1-h) gives oldest first (matches training)
+        const float* frame = local_obs_history[LOCAL_HIST_LEN - 1 - h];
+        for (int d = 0; d < LOCAL_FRAME_DIM; ++d)
+            obs[h * LOCAL_FRAME_DIM + d] = frame[d];
+    }
+    return obs;
+}
+
+// Helper: project gravity vector into body frame from quaternion [x,y,z,w]
+// Matches training: quat_rotate_inverse(q, [0,0,-1])
+//   pg_x =  2*(qw*qy - qx*qz)
+//   pg_y = -2*(qw*qx + qy*qz)
+//   pg_z =  1 - 2*(qw*qw + qz*qz)  =  -(1 - 2*(qx*qx + qy*qy))  [NOT negated]
+static void projected_gravity(const float q[4], float pg[3]) {
+    float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    // R^T * (0,0,-1): rotate world gravity into body frame
+    pg[0] =  2.0f * (qw * qy - qx * qz);
+    pg[1] = -2.0f * (qw * qx + qy * qz);
+    pg[2] = 1.0f - 2.0f * (qw * qw + qz * qz);
+}
 
 namespace Task {
+
+
 
     // Data
     Motor_state st;
@@ -19,6 +72,9 @@ namespace Task {
     float command_kp = 0;
     float command_kd = 0;
     int enable_filter = 1;
+    int received_joint_id = -1;             // Action/joint index from last command (-1 = all)
+    float received_latent[8] = {};          // Latent vector from last command (updated at 20 Hz by PC)
+    bool local_policy_active = false;       // Set to true in setup() if policy loaded successfully
     std::queue<int> info_queue;
     bool motor_calibrated = false;  // Motor calibration status
 
@@ -450,19 +506,63 @@ namespace Task {
                 _check_remote_switch();
                 _check_commands();
 
-                // === 2. Get interpolated setpoints ===
+                // === 2. Determine target position ===
                 float interp_pos, interp_vel, interp_kp, interp_kd;
 
-                if (cmd_interpolator.isTimedOut(COMMAND_TIMEOUT_MS)) {
-                    // Command timeout: hold last known position with moderate stiffness
-                    // This prevents the motor from drifting if communication drops
-                    interp_pos = target_pos;
+                if (local_policy_active) {
+                    // --- Local-policy mode (hierarchical deployment) ---
+                    // Build current 8-dim observation frame from latest IMU + motor state.
+                    // Layout: gravity(3) + gyro(3) + dof_pos(1) + dof_vel(1)
+                    float frame[LOCAL_FRAME_DIM];
+
+                    // Projected gravity from quaternion (BNO08x: [x,y,z,w])
+                    float q[4] = {
+                        CommTask::data_to_send.imu.quaternion.x,
+                        CommTask::data_to_send.imu.quaternion.y,
+                        CommTask::data_to_send.imu.quaternion.z,
+                        CommTask::data_to_send.imu.quaternion.w,
+                    };
+                    float pg[3];
+                    projected_gravity(q, pg);
+                    frame[0] = pg[0]; frame[1] = pg[1]; frame[2] = pg[2];
+
+                    // Gyro (rad/s)
+                    frame[3] = CommTask::data_to_send.imu.omega.x;
+                    frame[4] = CommTask::data_to_send.imu.omega.y;
+                    frame[5] = CommTask::data_to_send.imu.omega.z;
+
+                    // Joint position and velocity (motor angle – mechanical offset)
+                    frame[6] = st.angle - offset;   // dof_pos relative to zero
+                    frame[7] = st.angle_v;           // dof_vel
+
+                    push_local_obs_frame(frame);
+
+                    // Assemble the 40-dim local obs (5 history frames × 8)
+                    std::array<float, LOCAL_OBS_DIM> local_obs = build_local_obs();
+
+                    // Copy received latent into std::array
+                    std::array<float, LOCAL_LATENT_DIM> latent_arr{};
+                    for (size_t i = 0; i < LOCAL_LATENT_DIM; ++i)
+                        latent_arr[i] = received_latent[i];
+
+                    // Run local policy: latent + obs → motor target
+                    float motor_target = ::local_policy.select_action(latent_arr, local_obs);
+
+                    interp_pos = motor_target;
                     interp_vel = 0.0f;
-                    interp_kp = command_kp;
-                    interp_kd = command_kd;
+                    interp_kp  = DEPLOY_KP;
+                    interp_kd  = DEPLOY_KD;
+
                 } else {
-                    // Normal operation: get interpolated setpoint
-                    cmd_interpolator.sample(interp_pos, interp_vel, interp_kp, interp_kd);
+                    // --- Legacy PD mode: interpolate from PC-sent position target ---
+                    if (cmd_interpolator.isTimedOut(COMMAND_TIMEOUT_MS)) {
+                        interp_pos = target_pos;
+                        interp_vel = 0.0f;
+                        interp_kp = command_kp;
+                        interp_kd = command_kd;
+                    } else {
+                        cmd_interpolator.sample(interp_pos, interp_vel, interp_kp, interp_kd);
+                    }
                 }
 
                 // === 3. Apply Butterworth low-pass filter (optional) ===
@@ -499,9 +599,15 @@ namespace Task {
                 if (now_ms - last_print_time >= 500) {
                     last_print_time = now_ms;
                     unsigned long time_total = micros() - t_start;
-                    Serial.printf("[Motor] f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f dt_us=%lu\n",
-                                  loop_freq_filtered, st.angle, filtered_pos, interp_vel,
-                                  interp_kp, interp_kd, time_total);
+                    if (local_policy_active) {
+                        Serial.printf("[Motor/NN] f=%.1fHz pos=%.3f target=%.3f latent[0]=%.3f dt_us=%lu\n",
+                                      loop_freq_filtered, st.angle, filtered_pos,
+                                      received_latent[0], time_total);
+                    } else {
+                        Serial.printf("[Motor] f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f dt_us=%lu\n",
+                                      loop_freq_filtered, st.angle, filtered_pos, interp_vel,
+                                      interp_kp, interp_kd, time_total);
+                    }
                 }
 
                 DEBUG_PRINT("Position");

@@ -12,7 +12,7 @@
 
 #define WIFI_SSID "Device-Northwestern" //"Xenobot3" //"RovingXenobot" //"NUMSR" //  
 #define WIFI_PW "" //"Xenobotlab" // "RovingXenobot" //"" // "robotics!" // 
-#define SERVER_IP "129.105.73.204" //"129.105.69.100" // "129.105.73.189" //"129.105.73.235" //"129.105.73.251" //"192.168.1.57" //  "129.105.69.124" //
+#define SERVER_IP "129.105.69.100" //"129.105.73.204" // "129.105.73.189" //"129.105.73.235" //"129.105.73.251" //"192.168.1.57" //  "129.105.69.124" //
 #define SERVER_PORT 6666
 #define CLIENT_PORT 6666
 
@@ -26,6 +26,8 @@ struct MotorCommand {
     int calibrate;
     int restart;
     float timestamp;
+    int joint_id;         // Action/joint index this command targets (0-based); -1 = all
+    float latent[8];      // Latent vector from master policy; all zeros for legacy usage
 };
 
 // Legacy alias for compatibility

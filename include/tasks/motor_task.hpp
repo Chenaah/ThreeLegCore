@@ -177,6 +177,11 @@ namespace Task {
     extern float command_kp;
     extern float command_kd;
     extern int enable_filter;
+    extern int received_joint_id;            // Action/joint index from last command (-1 = all)
+    extern float received_latent[8];         // Latent vector from last command (updated at 20 Hz by PC)
+
+    // Whether the local policy is active (uses received_latent every 100 Hz loop)
+    extern bool local_policy_active;
 
     // Command interpolator (shared so comm_task can push commands)
     extern CommandInterpolator cmd_interpolator;
