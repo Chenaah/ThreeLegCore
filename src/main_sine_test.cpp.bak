@@ -1,0 +1,83 @@
+/**
+ * @file main.cpp
+ * @brief Temporary sanity check: sine wave motor movement
+ *
+ * Drives the motor in a sine wave position pattern using Set_control.
+ * Remove this and restore the original main.cpp after testing.
+ */
+#include <Arduino.h>
+#include <cmath>
+#include "MotorCtrl.hpp"
+
+// --- Config ---
+#define MOTOR_ID        1
+#define CAN_TX_PIN      GPIO_NUM_1
+#define CAN_RX_PIN      GPIO_NUM_2
+#define MOTOR_SWITCH    GPIO_NUM_38
+
+// Sine wave parameters
+#define SINE_AMPLITUDE  0.5f   // rad (keep small for safety!)
+#define SINE_FREQ_HZ    0.5f   // Hz
+#define LOOP_HZ         100    // control loop rate
+#define LOOP_DT_MS      (1000 / LOOP_HZ)
+
+// PD gains for position tracking
+#define KP  50.0f
+#define KD   2.0f
+
+Motor motor;
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    Serial.println("\n===== Motor Sine Wave Sanity Check =====");
+
+    // Power on motor driver
+    pinMode(MOTOR_SWITCH, OUTPUT);
+    digitalWrite(MOTOR_SWITCH, LOW);
+    delay(500);
+
+    // Init CAN + motor
+    uint64_t ret = motor.Init(MOTOR_ID, CAN_TX_PIN, CAN_RX_PIN);
+    if (ret == 0) {
+        Serial.println("[ERROR] Motor init failed! Halting.");
+        while (true) { delay(1000); }
+    }
+    Serial.println("[OK] Motor initialized.");
+
+    // Set zero position
+    motor.Set_zero();
+    delay(200);
+    Serial.println("[OK] Zero position set.");
+
+    // Enable motor
+    Motor_state st = motor.Enable();
+    delay(200);
+    Serial.printf("[OK] Motor enabled. mode=%d\n", st.mode);
+
+    Serial.printf("[Config] Amplitude=%.2f rad, Freq=%.2f Hz, Kp=%.1f, Kd=%.1f\n",
+                  SINE_AMPLITUDE, SINE_FREQ_HZ, KP, KD);
+    Serial.println("Starting sine wave in 2 seconds...");
+    delay(2000);
+}
+
+void loop() {
+    static unsigned long start_ms = millis();
+    static unsigned long last_print = 0;
+
+    float t = (millis() - start_ms) / 1000.0f;
+    float target_pos = SINE_AMPLITUDE * sinf(2.0f * M_PI * SINE_FREQ_HZ * t);
+    float target_vel = SINE_AMPLITUDE * 2.0f * M_PI * SINE_FREQ_HZ * cosf(2.0f * M_PI * SINE_FREQ_HZ * t);
+
+    // torque=0 feedforward, position + velocity tracking with PD
+    Motor_state st = motor.Set_control(0.0f, target_pos, target_vel, KP, KD);
+
+    // Print at ~5 Hz
+    if (millis() - last_print >= 200) {
+        last_print = millis();
+        Serial.printf("t=%.2f  tgt=%.3f  pos=%.3f  vel=%.2f  torque=%.2f  temp=%.1f\n",
+                      t, target_pos, st.angle, st.angle_v, st.torque, st.temperature);
+    }
+
+    delay(LOOP_DT_MS);
+}
