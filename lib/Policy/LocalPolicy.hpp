@@ -6,14 +6,13 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include "deploy_config.h"
+#include "local_obs_config.h"
 
 // ===== Local policy network dimensions =====
-// Input: latent_cmd(8) + local_obs(40) = 48
-// Architecture: Linear(48->128) -> ReLU -> Linear(128->64) -> ReLU -> Linear(64->1)
+// Input: latent_cmd(LOCAL_LATENT_DIM) + local_obs(LOCAL_OBS_DIM)
+// Architecture: Linear(input->128) -> ReLU -> Linear(128->64) -> ReLU -> Linear(64->1)
 // Output: 1 (mean only; log_std head not deployed)
-constexpr size_t LOCAL_LATENT_DIM  = 8;
-constexpr size_t LOCAL_OBS_DIM     = 40;
-constexpr size_t LOCAL_INPUT_DIM   = LOCAL_LATENT_DIM + LOCAL_OBS_DIM;  // 48
+constexpr size_t LOCAL_INPUT_DIM   = LOCAL_LATENT_DIM + LOCAL_OBS_DIM;
 constexpr size_t LOCAL_H1_DIM      = 128;
 constexpr size_t LOCAL_H2_DIM      = 64;
 constexpr size_t LOCAL_ACT_DIM     = 1;

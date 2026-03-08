@@ -4,6 +4,7 @@
 #include <queue>
 #include "Arduino.h"
 #include <MotorCtrl.hpp>
+#include "local_obs_config.h"
 
 #define MOTOR_ID 1
 
@@ -178,7 +179,7 @@ namespace Task {
     extern float command_kd;
     extern int enable_filter;
     extern int received_joint_id;            // Action/joint index from last command (-1 = all)
-    extern float received_latent[8];         // Latent vector from last command (updated at 20 Hz by PC)
+    extern float received_latent[LOCAL_LATENT_DIM];  // Updated at 20 Hz by PC
 
     // Whether the local policy is active (uses received_latent every 100 Hz loop)
     extern bool local_policy_active;

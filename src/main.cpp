@@ -32,11 +32,11 @@ void setup() {
     local_policy.set_module_index(0);  // <-- Change per module
 
     if (local_policy.load_from_littlefs()) {
-        // Run sanity check with reference values from Python conversion script:
-        //   Input: latent[0]=1.0, local_obs[0]=0.5, rest zeros
-        //   Expected raw mean: -1.80628085
-        //   Expected NN action (before default_dof_pos): -0.75796205
-        local_policy.run_sanity_check(-1.80628085f, -0.75796205f);
+        // Run sanity check with reference values generated alongside the deploy headers.
+        local_policy.run_sanity_check(
+            DEPLOY_SANITY_EXPECTED_MEAN,
+            DEPLOY_SANITY_EXPECTED_ACTION
+        );
         Task::local_policy_active = true;   // Enable local-policy mode in motor task
         Serial.println("[Setup] Local policy active: motor task will use NN at 100 Hz.");
     } else {

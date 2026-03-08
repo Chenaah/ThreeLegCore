@@ -4,37 +4,49 @@
 // Forward declaration of the global policy instance defined in main.cpp
 extern LocalPolicy local_policy;
 
-// History buffer for local policy obs (gravity + gyro + dof_pos + dof_vel)
-// LOCAL_OBS_DIM=40 = 8 values/frame × 5 history frames
-static constexpr int LOCAL_FRAME_DIM = 8;   // gravity(3)+gyro(3)+pos(1)+vel(1)
-static constexpr int LOCAL_HIST_LEN  = 5;
+static constexpr size_t LOCAL_LATENT_HISTORY_BUFFER_STEPS =
+    (LOCAL_LATENT_HISTORY_STEPS > 0) ? LOCAL_LATENT_HISTORY_STEPS : 1;
 
-// Circular history ring: newest at [0], oldest at [LOCAL_HIST_LEN-1]
-static float local_obs_history[LOCAL_HIST_LEN][LOCAL_FRAME_DIM] = {};
+// Circular history rings: newest at [0], oldest at [N-1]
+static float local_frame_history[LOCAL_FRAME_HISTORY_STEPS][LOCAL_FRAME_DIM] = {};
+static float local_latent_history[LOCAL_LATENT_HISTORY_BUFFER_STEPS][LOCAL_LATENT_DIM] = {};
 
-// Push a new frame into the history (shifts older frames back)
 static void push_local_obs_frame(const float frame[LOCAL_FRAME_DIM]) {
-    // Shift older frames: [0] <- [1], [1] <- [2], ...
-    for (int h = LOCAL_HIST_LEN - 1; h > 0; --h) {
-        for (int d = 0; d < LOCAL_FRAME_DIM; ++d)
-            local_obs_history[h][d] = local_obs_history[h - 1][d];
+    for (size_t h = LOCAL_FRAME_HISTORY_STEPS - 1; h > 0; --h) {
+        for (size_t d = 0; d < LOCAL_FRAME_DIM; ++d)
+            local_frame_history[h][d] = local_frame_history[h - 1][d];
     }
-    // Store newest frame at index 0
-    for (int d = 0; d < LOCAL_FRAME_DIM; ++d)
-        local_obs_history[0][d] = frame[d];
+    for (size_t d = 0; d < LOCAL_FRAME_DIM; ++d)
+        local_frame_history[0][d] = frame[d];
 }
 
-// Build the 40-dim local_obs array (oldest→newest, matching training layout)
-// Training layout: history.transpose(1,0,2).reshape(-1)
-//   → for module i: [frame_{H-1}, frame_{H-2}, ..., frame_0]
-// Our ring: history[0]=newest, history[H-1]=oldest  → iterate H-1 .. 0
+static void push_local_latent(const float latent[LOCAL_LATENT_DIM]) {
+    if constexpr (LOCAL_LATENT_HISTORY_STEPS > 0) {
+        for (size_t h = LOCAL_LATENT_HISTORY_STEPS - 1; h > 0; --h) {
+            for (size_t d = 0; d < LOCAL_LATENT_DIM; ++d)
+                local_latent_history[h][d] = local_latent_history[h - 1][d];
+        }
+        for (size_t d = 0; d < LOCAL_LATENT_DIM; ++d)
+            local_latent_history[0][d] = latent[d];
+    }
+}
+
 static std::array<float, LOCAL_OBS_DIM> build_local_obs() {
     std::array<float, LOCAL_OBS_DIM> obs{};
-    for (int h = 0; h < LOCAL_HIST_LEN; ++h) {
-        // history index (H-1-h) gives oldest first (matches training)
-        const float* frame = local_obs_history[LOCAL_HIST_LEN - 1 - h];
-        for (int d = 0; d < LOCAL_FRAME_DIM; ++d)
-            obs[h * LOCAL_FRAME_DIM + d] = frame[d];
+    size_t out_idx = 0;
+
+    for (size_t h = 0; h < LOCAL_FRAME_HISTORY_STEPS; ++h) {
+        const float* frame = local_frame_history[LOCAL_FRAME_HISTORY_STEPS - 1 - h];
+        for (size_t d = 0; d < LOCAL_FRAME_DIM; ++d)
+            obs[out_idx++] = frame[d];
+    }
+
+    if constexpr (LOCAL_LATENT_HISTORY_STEPS > 0) {
+        for (size_t h = 0; h < LOCAL_LATENT_HISTORY_STEPS; ++h) {
+            const float* latent = local_latent_history[LOCAL_LATENT_HISTORY_STEPS - 1 - h];
+            for (size_t d = 0; d < LOCAL_LATENT_DIM; ++d)
+                obs[out_idx++] = latent[d];
+        }
     }
     return obs;
 }
@@ -50,6 +62,43 @@ static void projected_gravity(const float q[4], float pg[3]) {
     pg[0] =  2.0f * (qw * qy - qx * qz);
     pg[1] = -2.0f * (qw * qx + qy * qz);
     pg[2] = 1.0f - 2.0f * (qw * qw + qz * qz);
+}
+
+static void build_current_local_frame(
+    const float q[4],
+    const float gyro[3],
+    float dof_pos,
+    float dof_vel,
+    float frame[LOCAL_FRAME_DIM]
+) {
+    float pg[3] = {};
+    bool pg_ready = false;
+    size_t idx = 0;
+
+    for (size_t component_idx = 0; component_idx < LOCAL_FRAME_COMPONENT_COUNT; ++component_idx) {
+        switch (LOCAL_FRAME_COMPONENTS[component_idx]) {
+            case LocalObsField::ProjectedGravity:
+                if (!pg_ready) {
+                    projected_gravity(q, pg);
+                    pg_ready = true;
+                }
+                frame[idx++] = pg[0];
+                frame[idx++] = pg[1];
+                frame[idx++] = pg[2];
+                break;
+            case LocalObsField::Gyro:
+                frame[idx++] = gyro[0];
+                frame[idx++] = gyro[1];
+                frame[idx++] = gyro[2];
+                break;
+            case LocalObsField::DofPos:
+                frame[idx++] = dof_pos;
+                break;
+            case LocalObsField::DofVel:
+                frame[idx++] = dof_vel;
+                break;
+        }
+    }
 }
 
 namespace Task {
@@ -73,7 +122,7 @@ namespace Task {
     float command_kd = 0;
     int enable_filter = 1;
     int received_joint_id = -1;             // Action/joint index from last command (-1 = all)
-    float received_latent[8] = {};          // Latent vector from last command (updated at 20 Hz by PC)
+    float received_latent[LOCAL_LATENT_DIM] = {};  // Updated at 20 Hz by PC
     bool local_policy_active = false;       // Set to true in setup() if policy loaded successfully
     std::queue<int> info_queue;
     bool motor_calibrated = false;  // Motor calibration status
@@ -511,33 +560,32 @@ namespace Task {
 
                 if (local_policy_active) {
                     // --- Local-policy mode (hierarchical deployment) ---
-                    // Build current 8-dim observation frame from latest IMU + motor state.
-                    // Layout: gravity(3) + gyro(3) + dof_pos(1) + dof_vel(1)
+                    // Build the configurable local frame from latest motor/IMU state.
                     float frame[LOCAL_FRAME_DIM];
 
-                    // Projected gravity from quaternion (BNO08x: [x,y,z,w])
                     float q[4] = {
                         CommTask::data_to_send.imu.quaternion.x,
                         CommTask::data_to_send.imu.quaternion.y,
                         CommTask::data_to_send.imu.quaternion.z,
                         CommTask::data_to_send.imu.quaternion.w,
                     };
-                    float pg[3];
-                    projected_gravity(q, pg);
-                    frame[0] = pg[0]; frame[1] = pg[1]; frame[2] = pg[2];
-
-                    // Gyro (rad/s)
-                    frame[3] = CommTask::data_to_send.imu.omega.x;
-                    frame[4] = CommTask::data_to_send.imu.omega.y;
-                    frame[5] = CommTask::data_to_send.imu.omega.z;
-
-                    // Joint position and velocity (motor angle – mechanical offset)
-                    frame[6] = st.angle - offset;   // dof_pos relative to zero
-                    frame[7] = st.angle_v;           // dof_vel
+                    float gyro[3] = {
+                        CommTask::data_to_send.imu.omega.x,
+                        CommTask::data_to_send.imu.omega.y,
+                        CommTask::data_to_send.imu.omega.z,
+                    };
+                    build_current_local_frame(
+                        q,
+                        gyro,
+                        st.angle - offset,
+                        st.angle_v,
+                        frame
+                    );
 
                     push_local_obs_frame(frame);
+                    push_local_latent(received_latent);
 
-                    // Assemble the 40-dim local obs (5 history frames × 8)
+                    // Assemble configurable local obs = frame history + latent history.
                     std::array<float, LOCAL_OBS_DIM> local_obs = build_local_obs();
 
                     // Copy received latent into std::array
