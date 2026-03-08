@@ -46,6 +46,8 @@ namespace Task {
             received_data.calibrate = cmd.calibrate;
             received_data.restart = cmd.restart;
             received_data.timestamp = cmd.timestamp;
+            received_data.control_mode = cmd.control_mode;
+            received_data.joint_offset = cmd.joint_offset;
             received_data.joint_id = cmd.joint_id;
             memcpy(received_data.latent, cmd.latent, sizeof(cmd.latent));
 
@@ -59,16 +61,10 @@ namespace Task {
             calibrate_command = received_data.calibrate;
             restart_command = received_data.restart;
             last_rcv_timestamp = received_data.timestamp;
+            received_control_mode = received_data.control_mode;
+            received_joint_offset = received_data.joint_offset;
             received_joint_id = received_data.joint_id;
             memcpy(received_latent, received_data.latent, sizeof(received_data.latent));
-
-            // Update local policy module index from joint_id (action_idx)
-            // This ensures the correct default_dof_pos offset is applied
-            // for each module in the hierarchical deployment.
-            if (local_policy_active && received_data.joint_id >= 0 &&
-                received_data.joint_id < DEPLOY_NUM_MODULES) {
-                ::local_policy.set_module_index(received_data.joint_id);
-            }
 
             // Push new waypoint into the interpolator for smooth 100 Hz control
             cmd_interpolator.pushCommand(

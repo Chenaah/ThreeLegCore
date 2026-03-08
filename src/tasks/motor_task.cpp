@@ -121,9 +121,11 @@ namespace Task {
     float command_kp = 0;
     float command_kd = 0;
     int enable_filter = 1;
+    int received_control_mode = CONTROL_MODE_DIRECT_PD;
+    float received_joint_offset = 0.0f;
     int received_joint_id = -1;             // Action/joint index from last command (-1 = all)
     float received_latent[LOCAL_LATENT_DIM] = {};  // Updated at 20 Hz by PC
-    bool local_policy_active = false;       // Set to true in setup() if policy loaded successfully
+    bool local_policy_loaded = false;       // Set to true in setup() if policy loaded successfully
     std::queue<int> info_queue;
     bool motor_calibrated = false;  // Motor calibration status
 
@@ -573,7 +575,10 @@ namespace Task {
                 // === 3. Determine target position ===
                 float interp_pos, interp_vel, interp_kp, interp_kd;
 
-                if (local_policy_active) {
+                const bool use_local_policy =
+                    (received_control_mode == CONTROL_MODE_LOCAL_POLICY) && local_policy_loaded;
+
+                if (use_local_policy) {
                     // --- Local-policy mode (hierarchical deployment) ---
                     // Run policy every PD_SUBSTEPS ticks (100 Hz), interpolate at 500 Hz
                     if (substep == 0) {
@@ -608,7 +613,11 @@ namespace Task {
                         for (size_t i = 0; i < LOCAL_LATENT_DIM; ++i)
                             latent_arr[i] = received_latent[i];
 
-                        float motor_target = ::local_policy.select_action(latent_arr, local_obs);
+                        float motor_target = ::local_policy.select_action(
+                            latent_arr,
+                            local_obs,
+                            received_joint_offset
+                        );
 
                         // Shift targets for interpolation
                         prev_policy_target = curr_policy_target;
@@ -673,12 +682,14 @@ namespace Task {
                 if (now_ms - last_print_time >= 500) {
                     last_print_time = now_ms;
                     unsigned long time_total = micros() - t_start;
-                    if (local_policy_active) {
-                        Serial.printf("[Motor/NN] f=%.1fHz pos=%.3f target=%.3f latent[0]=%.3f sub=%d dt_us=%lu\n",
+                    if (use_local_policy) {
+                        Serial.printf("[Motor/NN] mode=%d f=%.1fHz pos=%.3f target=%.3f offset=%.3f latent[0]=%.3f sub=%d dt_us=%lu\n",
+                                      received_control_mode,
                                       loop_freq_filtered, st.angle, filtered_pos,
-                                      received_latent[0], substep, time_total);
+                                      received_joint_offset, received_latent[0], substep, time_total);
                     } else {
-                        Serial.printf("[Motor] f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f dt_us=%lu\n",
+                        Serial.printf("[Motor] mode=%d f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f dt_us=%lu\n",
+                                      received_control_mode,
                                       loop_freq_filtered, st.angle, filtered_pos, interp_vel,
                                       interp_kp, interp_kd, time_total);
                     }

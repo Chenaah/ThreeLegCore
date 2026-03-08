@@ -236,19 +236,25 @@ public:
         return action;
     }
 
-    // Full action pipeline: NN output + default_dof_pos offset.
+    // Full action pipeline with an explicit per-joint offset from the PC.
     // Returns the motor position target (to be sent to motor_task).
     //
     // This matches the training pipeline:
     //   motor_target = policy_action + default_dof_pos[module_idx]
     //
-    // The motor_task will then add its own mechanical offset before
-    // sending to the motor driver.
+    // The PC now sends that default_dof_pos as `joint_offset`, so live control
+    // does not rely on hardcoded module-index mapping in the ESP32 firmware.
+    float select_action(const std::array<float, LOCAL_LATENT_DIM>& latent_cmd,
+                        const std::array<float, LOCAL_OBS_DIM>& local_obs,
+                        float joint_offset) const {
+        float nn_action = forward_nn(latent_cmd, local_obs);
+        return nn_action + joint_offset;
+    }
+
+    // Backward-compatible fallback using the locally configured module index.
     float select_action(const std::array<float, LOCAL_LATENT_DIM>& latent_cmd,
                         const std::array<float, LOCAL_OBS_DIM>& local_obs) const {
-        float nn_action = forward_nn(latent_cmd, local_obs);
-        float motor_target = nn_action + DEPLOY_DEFAULT_DOF_POS[module_idx];
-        return motor_target;
+        return select_action(latent_cmd, local_obs, DEPLOY_DEFAULT_DOF_POS[module_idx]);
     }
 
     // Run sanity check with known test vector

@@ -28,7 +28,7 @@
 #define MOTOR_SWITCH GPIO_NUM_38
 
 #define DELAY_PERIOD 2 //10 // 2
-#define DEBUG_ENABLED 0
+#define DEBUG_ENABLED 1
 
 #if DEBUG_ENABLED
 #define DEBUG_PRINT(c) Serial.println(c)

@@ -15,31 +15,6 @@ void multiplyQuaternions(const float q1[4], const float q2[4], float result[4]) 
     result[3] = q1[0]*q2[3] + q1[1]*q2[2] - q1[2]*q2[1] + q1[3]*q2[0];
 }
 
-// std::vector<float> rotateQuaternion(float x, float y, float z, float w) {
-//     // rotates a quaternion (x, y, z, w) by 180 degrees around the z-axis
-//     // Normalize the quaternion
-//     normalize(w, x, y, z);
-
-//     // Rotation quaternion (180 degrees around z-axis)
-//     float r[4] = {0, 0, 0, -1}; // cos(90°) + sin(90°) * k
-
-//     // Conjugate of r
-//     float rConjugate[4] = {r[0], -r[1], -r[2], -r[3]};
-
-//     // Original quaternion
-//     float q[4] = {w, x, y, z};
-
-//     // Temporary quaternion to hold intermediate result
-//     float temp[4];
-//     multiplyQuaternions(r, q, temp);
-//     multiplyQuaternions(temp, rConjugate, q);
-
-//     std::vector<float> q_vec = {q[1], q[2], q[3], q[0]}; //xyzw
-
-//     return q_vec;
-
-// }
-
 std::vector<float> rotateQuaternion(float x, float y, float z, float w) {
     // Normalize the quaternion
     normalize(w, x, y, z);
@@ -63,29 +38,6 @@ std::vector<float> rotateQuaternion(float x, float y, float z, float w) {
 
     return q_vec;
 }
-
-// // Function to rotate an angular velocity vector
-// std::vector<float> rotateAngularVelocity(float wx, float wy, float wz) {
-
-//     // Rotation quaternion
-//     float r[4] = {0, 0, 0, -1}; // cos(90°) + sin(90°) * k
-
-//     // Conjugate of r
-//     float rConjugate[4] = {r[0], -r[1], -r[2], -r[3]};
-
-//     // Angular velocity quaternion
-//     float omega[4] = {0, wx, wy, wz};
-
-//     // Temporary quaternion to hold intermediate result
-//     float temp[4];
-//     multiplyQuaternions(r, omega, temp);
-//     multiplyQuaternions(temp, rConjugate, omega);
-
-//     std::vector<float> ang_vel_vec = {omega[1], omega[2], omega[3]}; //xyzw
-
-//     return ang_vel_vec;
-// }
-
 
 // Function to rotate an angular velocity vector
 std::vector<float> rotateAngularVelocity(float wx, float wy, float wz) {
@@ -118,119 +70,140 @@ namespace Task {
 
     namespace IMUTask {
 
-        BNO08x myIMU;
+        // IMU sampling rate
+        static constexpr double IMU_SAMPLE_HZ = 200.0;
 
-        void set_reports() {
-            // Here is where you define the sensor outputs you want to receive
-            // TODO: Set data output rate
-            Serial.println("Setting desired reports");
-            if (myIMU.enableRotationVector() == true) {
-                Serial.println(F("Rotation vector enabled"));
-                Serial.println(F("Output in form i, j, k, real, accuracy"));
-            } else {
-                Serial.println("Could not enable rotation vector");
-            }
-            delay(100);
-            if (myIMU.enableAccelerometer() == true) {
-                Serial.println(F("Accelerometer enabled"));
-                Serial.println(F("Output in form x, y, z, in m/s^2"));
-            } else {
-                Serial.println("Could not enable accelerometer");
-            }
-            delay(100);
-            if (myIMU.enableGyro() == true) {
-                Serial.println(F("Gyro enabled"));
-                Serial.println(F("Output in form x, y, z, in radians per second"));
-            } else {
-                Serial.println("Could not enable gyro");
-            }
-            delay(100); // This delay allows enough time for the BNO086 to accept the new 
-                        // configuration and clear its reset status
-        }
+        // Butterworth low-pass filters for each axis
+        // Quaternion: 20 Hz cutoff — preserves fast body rotations, removes high-freq noise
+        ButterworthFilter quat_filter_x(20, IMU_SAMPLE_HZ);
+        ButterworthFilter quat_filter_y(20, IMU_SAMPLE_HZ);
+        ButterworthFilter quat_filter_z(20, IMU_SAMPLE_HZ);
+        ButterworthFilter quat_filter_w(20, IMU_SAMPLE_HZ);
+
+        // Acceleration: 15 Hz cutoff — accelerometer is noisy, aggressive filtering is fine
+        ButterworthFilter acc_filter_x(15, IMU_SAMPLE_HZ);
+        ButterworthFilter acc_filter_y(15, IMU_SAMPLE_HZ);
+        ButterworthFilter acc_filter_z(15, IMU_SAMPLE_HZ);
+
+        // Angular velocity: 25 Hz cutoff — used for control, keep more bandwidth
+        ButterworthFilter gyro_filter_x(25, IMU_SAMPLE_HZ);
+        ButterworthFilter gyro_filter_y(25, IMU_SAMPLE_HZ);
+        ButterworthFilter gyro_filter_z(25, IMU_SAMPLE_HZ);
 
         void run(void *pvParameters) {
 
             vTaskDelay(1000);
 
-            //if (myIMU.begin() == false) {  
-            if (myIMU.beginSPI(BNO08X_CS, BNO08X_INT, BNO08X_RST) == false) {
-                Serial.print("No BNO08x detected");
+            // Initialize IMU with 5ms sample interval (200Hz)
+            bool success = IMUManager::Initialize(
+                BNO08X_CS,
+                BNO08X_INT,
+                BNO08X_RST,
+                5 // 5ms sample interval = 200Hz
+            );
+
+            if (!success) {
+                Serial.println("No BNO08x detected (IMUManager init failed)");
                 enqueue(info_queue, 200);
-            } else {
-                Serial.println("BNO08x found!");
-                enqueue(info_queue, 201);
+                vTaskDelete(NULL);
+                return;
             }
 
-            // Configeration
-            set_reports();
+            Serial.println("BNO08x found! (IMUManager initialized at 200Hz)");
+            enqueue(info_queue, 201);
 
-            float count[3] = {0, 0, 0};
+            // Wait for sensor to stabilize
+            vTaskDelay(pdMS_TO_TICKS(100));
+
+            uint32_t last_quat_count = 0;
+            uint32_t last_accel_count = 0;
+            uint32_t last_gyro_count = 0;
+
+            float rate_count[3] = {0, 0, 0};
 
             while (true) {
-                // esp_task_wdt_reset();
-                vTaskDelay(pdMS_TO_TICKS(DELAY_PERIOD));
+                vTaskDelay(pdMS_TO_TICKS(5)); // 5ms = 200Hz, matching IMU sample rate
 
-                if (myIMU.wasReset()) {
-                    Serial.print("sensor was reset ");
-                    set_reports();
-                }
-
-                static long last_print=millis();
-                if (millis()-last_print>1000){
+                static long last_print = millis();
+                if (millis() - last_print > 1000) {
                     Serial.print("IMU Rates (Hz) - Quat: ");
-                    Serial.print(count[0]);
+                    Serial.print(rate_count[0]);
                     Serial.print(", Acc: ");
-                    Serial.print(count[1]);
+                    Serial.print(rate_count[1]);
                     Serial.print(", Gyro: ");
-                    Serial.println(count[2]);
-                    count[0]=0;
-                    count[1]=0;
-                    count[2]=0;
-                    last_print=millis();
+                    Serial.println(rate_count[2]);
+                    rate_count[0] = 0;
+                    rate_count[1] = 0;
+                    rate_count[2] = 0;
+                    last_print = millis();
                 }
 
-                // Has a new event come in on the Sensor Hub Bus?
-                if (myIMU.getSensorEvent() == true) {
-                    // Serial.print("Event ID: ");
-                    // Serial.println(myIMU.getSensorEventID());
+                // Read raw data from IMUManager (no extrapolation needed here,
+                // the new driver runs its own SPI task at the configured rate)
+                IMUManager::IMUData data = IMUManager::GetRawData();
 
-                    if (myIMU.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
-                        float quatRadianAccuracy = myIMU.getQuatRadianAccuracy();
-                        quat_imu[0] = myIMU.getQuatI(); // x
-                        quat_imu[1] = myIMU.getQuatJ(); // y
-                        quat_imu[2] = myIMU.getQuatK(); // z
-                        quat_imu[3] = myIMU.getQuatReal(); // w
+                // Check for new quaternion data
+                {
+                    // Use the raw data we already fetched
+                    float qi = data.quaternion.x;
+                    float qj = data.quaternion.y;
+                    float qk = data.quaternion.z;
+                    float qw = data.quaternion.w;
 
-                        quat_imu = rotateQuaternion(quat_imu[0], quat_imu[1], quat_imu[2], quat_imu[3]); // input: x,y,z,w
+                    // Check if data actually changed by comparing timestamp
+                    if (data.quaternion_timestamp_us != 0) {
+                        std::vector<float> rotated = rotateQuaternion(qi, qj, qk, qw); // input: x,y,z,w
 
-                        count[0] ++;
+                        // Apply Butterworth filter to each quaternion component
+                        quat_imu[0] = quat_filter_x.filter(rotated[0]);
+                        quat_imu[1] = quat_filter_y.filter(rotated[1]);
+                        quat_imu[2] = quat_filter_z.filter(rotated[2]);
+                        quat_imu[3] = quat_filter_w.filter(rotated[3]);
+
+                        // Re-normalize after filtering to keep unit quaternion
+                        float norm = std::sqrt(quat_imu[0]*quat_imu[0] + quat_imu[1]*quat_imu[1]
+                                             + quat_imu[2]*quat_imu[2] + quat_imu[3]*quat_imu[3]);
+                        if (norm > 1e-6f) {
+                            quat_imu[0] /= norm;
+                            quat_imu[1] /= norm;
+                            quat_imu[2] /= norm;
+                            quat_imu[3] /= norm;
+                        }
+
+                        rate_count[0]++;
 
                         DEBUG_PRINT("Quat: ");
                         DEBUG_PRINT(quat_imu[0]);
                     }
+                }
 
-                    if (myIMU.getSensorEventID() == SENSOR_REPORTID_ACCELEROMETER) {
-                        acc_imu[0] = myIMU.getAccelX();
-                        acc_imu[1] = myIMU.getAccelY();
-                        acc_imu[2] = myIMU.getAccelZ();
-                        count[1] ++;
-                        // Serial.print("Acc: ");
-                        // Serial.println(acc_imu[0]);
+                // Check for new accelerometer data
+                {
+                    if (data.acceleration_timestamp_us != 0) {
+                        acc_imu[0] = acc_filter_x.filter(data.acceleration.x);
+                        acc_imu[1] = acc_filter_y.filter(data.acceleration.y);
+                        acc_imu[2] = acc_filter_z.filter(data.acceleration.z);
+                        rate_count[1]++;
                     }
+                }
 
-                    if (myIMU.getSensorEventID() == SENSOR_REPORTID_GYROSCOPE_CALIBRATED) {
-                        ang_vel_imu[0] = myIMU.getGyroX();
-                        ang_vel_imu[1] = myIMU.getGyroY();
-                        ang_vel_imu[2] = myIMU.getGyroZ();
-                        ang_vel_imu = rotateAngularVelocity(ang_vel_imu[0], ang_vel_imu[1], ang_vel_imu[2]);
-                        count[2] ++;
+                // Check for new gyro data
+                {
+                    if (data.angular_velocity_timestamp_us != 0) {
+                        std::vector<float> rotated_gyro = rotateAngularVelocity(
+                            data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z);
+
+                        ang_vel_imu[0] = gyro_filter_x.filter(rotated_gyro[0]);
+                        ang_vel_imu[1] = gyro_filter_y.filter(rotated_gyro[1]);
+                        ang_vel_imu[2] = gyro_filter_z.filter(rotated_gyro[2]);
+                        rate_count[2]++;
+
                         DEBUG_PRINT("AngVel: ");
                         DEBUG_PRINT(ang_vel_imu[0]);
                         DEBUG_PRINT(", ");
                         DEBUG_PRINT(ang_vel_imu[1]);
                         DEBUG_PRINT(", ");
                         DEBUG_PRINT(ang_vel_imu[2]);
-
                     }
                 }
 

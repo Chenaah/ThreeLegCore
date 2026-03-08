@@ -1,6 +1,7 @@
 #include "tasks.hpp"
 #include "identity.hpp"
 #include "LocalPolicy.hpp"
+#include <driver/spi_master.h>
 
 // Global policy instance (accessible from other tasks if needed)
 LocalPolicy local_policy;
@@ -10,7 +11,22 @@ void setup() {
     Serial.println("------ Hello! ------");
     send_led_message(LED_MSG_POWER_ON);
 
-    SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
+    // Initialize SPI bus using ESP-IDF API (required by the new BNO08x driver)
+    spi_bus_config_t spi_bus_cfg = {
+        .mosi_io_num = (gpio_num_t)SPI_MOSI,
+        .miso_io_num = (gpio_num_t)SPI_MISO,
+        .sclk_io_num = (gpio_num_t)SPI_SCK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 1024,
+        .flags = 0,
+        .intr_flags = 0
+    };
+    esp_err_t spi_ret = spi_bus_initialize(SPI2_HOST, &spi_bus_cfg, SPI_DMA_CH_AUTO);
+    if (spi_ret != ESP_OK && spi_ret != ESP_ERR_INVALID_STATE) {
+        Serial.printf("ERROR: Failed to initialize SPI bus: %d\n", spi_ret);
+    }
+
     pinMode(BNO08X_CS, OUTPUT);
     digitalWrite(BNO08X_CS, HIGH);   // Deselect BNO08x
     pinMode(DWM1000_CS, OUTPUT);
@@ -23,13 +39,10 @@ void setup() {
     // --- Load local policy from LittleFS ---
     Serial.println("\n====== Loading Local Policy ======");
 
-    // TODO: Set module index based on hardware identity.
-    // Each ESP32 controls one module (leg). The module index determines
-    // which default_dof_pos offset is applied after the NN output.
-    //   Module 0: default_dof_pos = 0.0 rad
-    //   Module 1: default_dof_pos = 0.5 rad
-    //   Module 2: default_dof_pos = -0.5 rad
-    local_policy.set_module_index(0);  // <-- Change per module
+    // Fallback only for sanity checks and offline debugging.
+    // During live hierarchical control, the PC sends the joint offset explicitly
+    // in every MotorCommand, so the ESP32 does not depend on hardcoded mapping.
+    local_policy.set_module_index(0);
 
     if (local_policy.load_from_littlefs()) {
         // Run sanity check with reference values generated alongside the deploy headers.
@@ -37,8 +50,8 @@ void setup() {
             DEPLOY_SANITY_EXPECTED_MEAN,
             DEPLOY_SANITY_EXPECTED_ACTION
         );
-        Task::local_policy_active = true;   // Enable local-policy mode in motor task
-        Serial.println("[Setup] Local policy active: motor task will use NN at 100 Hz.");
+        Task::local_policy_loaded = true;
+        Serial.println("[Setup] Local policy loaded: waiting for PC control_mode to activate NN.");
     } else {
         Serial.println("WARNING: Local policy not loaded, running without NN");
     }

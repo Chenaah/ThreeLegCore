@@ -26,6 +26,8 @@ struct MotorCommand {
     int calibrate;
     int restart;
     float timestamp;
+    int control_mode;     // 0=direct PD target from PC, 1=ESP32 local policy
+    float joint_offset;   // Per-joint default offset (radians), sent explicitly by PC
     int joint_id;         // Action/joint index this command targets (0-based); -1 = all
     float latent[8];      // Latent vector from master policy; all zeros for legacy usage
 };

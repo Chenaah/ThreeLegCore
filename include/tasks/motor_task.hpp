@@ -164,6 +164,11 @@ struct CommandInterpolator {
 
 namespace Task {
 
+    enum ControlMode : int32_t {
+        CONTROL_MODE_DIRECT_PD = 0,
+        CONTROL_MODE_LOCAL_POLICY = 1,
+    };
+
     // Data
     extern Motor_state st;
     extern int remote_switch;
@@ -183,11 +188,13 @@ namespace Task {
     extern float command_kp;
     extern float command_kd;
     extern int enable_filter;
+    extern int received_control_mode;       // Control mode from last command
+    extern float received_joint_offset;     // Per-joint offset from last command
     extern int received_joint_id;            // Action/joint index from last command (-1 = all)
     extern float received_latent[LOCAL_LATENT_DIM];  // Updated at 20 Hz by PC
 
-    // Whether the local policy is active (uses received_latent every 100 Hz loop)
-    extern bool local_policy_active;
+    // Whether the local policy weights are loaded and available to use.
+    extern bool local_policy_loaded;
 
     // Command interpolator (shared so comm_task can push commands)
     extern CommandInterpolator cmd_interpolator;

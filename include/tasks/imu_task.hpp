@@ -2,24 +2,17 @@
 
 #include "Arduino.h"
 
-
-#include <Wire.h>
-// #include <Adafruit_Sensor.h>
-#include <SparkFun_BNO08x_Arduino_Library.h>
-// #include <utility/imumaths.h>
-// #include "SPI.h"
+#include <IMUManager.hpp>
 #include <vector>
 
 
 namespace Task {
 
-    // IMU data
-    // extern sensors_event_t orientationData, linearAccelData, gyroData;
-    // extern imu::Quaternion quat;
+    // IMU data (kept as std::vector<float> for backward compatibility)
     extern std::vector<float> euler_imu;
-    extern std::vector<float> quat_imu;
-    extern std::vector<float> acc_imu;
-    extern std::vector<float> ang_vel_imu;
+    extern std::vector<float> quat_imu;   // x, y, z, w
+    extern std::vector<float> acc_imu;    // x, y, z
+    extern std::vector<float> ang_vel_imu; // x, y, z
 
     namespace IMUTask {
         void run(void *pvParameters);
