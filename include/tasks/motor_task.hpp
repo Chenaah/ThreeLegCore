@@ -9,9 +9,14 @@
 #define MOTOR_ID 1
 
 // Control loop timing
-#define CONTROL_LOOP_HZ     100    // PD controller frequency (Hz)
-#define CONTROL_LOOP_DT_MS  (1000 / CONTROL_LOOP_HZ)  // 10 ms
-#define CONTROL_LOOP_DT_S   (1.0f / CONTROL_LOOP_HZ)  // 0.01 s
+#define POLICY_LOOP_HZ      100    // Policy inference frequency (Hz)
+#define PD_LOOP_HZ           500    // PD controller / motor command frequency (Hz)
+#define PD_SUBSTEPS         (PD_LOOP_HZ / POLICY_LOOP_HZ)  // 5 substeps per policy tick
+
+// Legacy aliases (used by filter, torque rate limiter, etc.)
+#define CONTROL_LOOP_HZ     PD_LOOP_HZ
+#define CONTROL_LOOP_DT_MS  (1000 / PD_LOOP_HZ)    // 2 ms
+#define CONTROL_LOOP_DT_S   (1.0f / PD_LOOP_HZ)    // 0.002 s
 
 // Command timeout: if no new command arrives within this time, hold last position
 #define COMMAND_TIMEOUT_MS   200   // 200 ms = ~4 missed 20 Hz packets

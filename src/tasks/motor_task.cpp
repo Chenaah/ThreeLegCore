@@ -137,7 +137,7 @@ namespace Task {
     namespace MotorTask {
 
         Motor motor;
-        ButterworthFilter filter(15, CONTROL_LOOP_HZ);  // 15 Hz cutoff at 100 Hz sampling
+        ButterworthFilter filter(15, PD_LOOP_HZ);  // 15 Hz cutoff at 500 Hz sampling
         int motor_running = false;
         unsigned long epi_start_time;
         Motor_fault_state last_fault;  // Store last received fault
@@ -533,24 +533,29 @@ namespace Task {
             
             _enable();
             
-            // Use vTaskDelayUntil for deterministic 100 Hz timing
+            // PD loop runs at 500 Hz, policy inference at 100 Hz (every PD_SUBSTEPS ticks)
             TickType_t lastWakeTime = xTaskGetTickCount();
-            const TickType_t dt = pdMS_TO_TICKS(CONTROL_LOOP_DT_MS);
-            
+            const TickType_t dt = pdMS_TO_TICKS(CONTROL_LOOP_DT_MS);  // 2 ms
+
             // For frequency measurement and diagnostics
             unsigned long last_loop_time = micros();
             unsigned long loop_count = 0;
             float loop_freq = 0;
-            float loop_freq_filtered = CONTROL_LOOP_HZ; // EMA-filtered frequency
+            float loop_freq_filtered = PD_LOOP_HZ; // EMA-filtered frequency
             unsigned long last_print_time = millis();
 
             // Torque rate limiter: prevent sudden torque spikes
             float last_torque_cmd = 0.0f;
             const float MAX_TORQUE_RATE = 50.0f * CONTROL_LOOP_DT_S; // max torque change per tick (N.m/tick)
 
+            // Interpolation state for local-policy mode
+            float prev_policy_target = 0.0f;  // target from previous policy tick
+            float curr_policy_target = 0.0f;  // target from current policy tick
+            int substep = 0;                   // counts 0..PD_SUBSTEPS-1
+
             while (true) {
                 unsigned long t_start = micros();
-                
+
                 // === 1. Check remote switch & commands (lightweight) ===
                 _check_remote_switch();
                 _check_commands();
@@ -560,46 +565,57 @@ namespace Task {
 
                 if (local_policy_active) {
                     // --- Local-policy mode (hierarchical deployment) ---
-                    // Build the configurable local frame from latest motor/IMU state.
-                    float frame[LOCAL_FRAME_DIM];
+                    // Run policy every PD_SUBSTEPS ticks (100 Hz), interpolate at 500 Hz
+                    if (substep == 0) {
+                        // Policy tick: build obs and run inference
+                        float frame[LOCAL_FRAME_DIM];
 
-                    float q[4] = {
-                        CommTask::data_to_send.imu.quaternion.x,
-                        CommTask::data_to_send.imu.quaternion.y,
-                        CommTask::data_to_send.imu.quaternion.z,
-                        CommTask::data_to_send.imu.quaternion.w,
-                    };
-                    float gyro[3] = {
-                        CommTask::data_to_send.imu.omega.x,
-                        CommTask::data_to_send.imu.omega.y,
-                        CommTask::data_to_send.imu.omega.z,
-                    };
-                    build_current_local_frame(
-                        q,
-                        gyro,
-                        st.angle - offset,
-                        st.angle_v,
-                        frame
-                    );
+                        float q[4] = {
+                            CommTask::data_to_send.imu.quaternion.x,
+                            CommTask::data_to_send.imu.quaternion.y,
+                            CommTask::data_to_send.imu.quaternion.z,
+                            CommTask::data_to_send.imu.quaternion.w,
+                        };
+                        float gyro[3] = {
+                            CommTask::data_to_send.imu.omega.x,
+                            CommTask::data_to_send.imu.omega.y,
+                            CommTask::data_to_send.imu.omega.z,
+                        };
+                        build_current_local_frame(
+                            q,
+                            gyro,
+                            st.angle - offset,
+                            st.angle_v,
+                            frame
+                        );
 
-                    push_local_obs_frame(frame);
-                    push_local_latent(received_latent);
+                        push_local_obs_frame(frame);
+                        push_local_latent(received_latent);
 
-                    // Assemble configurable local obs = frame history + latent history.
-                    std::array<float, LOCAL_OBS_DIM> local_obs = build_local_obs();
+                        std::array<float, LOCAL_OBS_DIM> local_obs = build_local_obs();
 
-                    // Copy received latent into std::array
-                    std::array<float, LOCAL_LATENT_DIM> latent_arr{};
-                    for (size_t i = 0; i < LOCAL_LATENT_DIM; ++i)
-                        latent_arr[i] = received_latent[i];
+                        std::array<float, LOCAL_LATENT_DIM> latent_arr{};
+                        for (size_t i = 0; i < LOCAL_LATENT_DIM; ++i)
+                            latent_arr[i] = received_latent[i];
 
-                    // Run local policy: latent + obs → motor target
-                    float motor_target = ::local_policy.select_action(latent_arr, local_obs);
+                        float motor_target = ::local_policy.select_action(latent_arr, local_obs);
 
-                    interp_pos = motor_target;
+                        // Shift targets for interpolation
+                        prev_policy_target = curr_policy_target;
+                        curr_policy_target = motor_target;
+                    }
+
+                    // Linear interpolation between prev and curr policy targets
+                    // substep=0 → alpha=0 (curr_policy_target), substep=PD_SUBSTEPS-1 → near 1
+                    // We interpolate forward: at substep 0 we are at curr, moving toward next (unknown)
+                    // So instead interpolate from prev→curr over the substep window
+                    float alpha = (float)(substep + 1) / (float)PD_SUBSTEPS;
+                    interp_pos = prev_policy_target + alpha * (curr_policy_target - prev_policy_target);
                     interp_vel = 0.0f;
                     interp_kp  = DEPLOY_KP;
                     interp_kd  = DEPLOY_KD;
+
+                    substep = (substep + 1) % PD_SUBSTEPS;
 
                 } else {
                     // --- Legacy PD mode: interpolate from PC-sent position target ---
@@ -648,9 +664,9 @@ namespace Task {
                     last_print_time = now_ms;
                     unsigned long time_total = micros() - t_start;
                     if (local_policy_active) {
-                        Serial.printf("[Motor/NN] f=%.1fHz pos=%.3f target=%.3f latent[0]=%.3f dt_us=%lu\n",
+                        Serial.printf("[Motor/NN] f=%.1fHz pos=%.3f target=%.3f latent[0]=%.3f sub=%d dt_us=%lu\n",
                                       loop_freq_filtered, st.angle, filtered_pos,
-                                      received_latent[0], time_total);
+                                      received_latent[0], substep, time_total);
                     } else {
                         Serial.printf("[Motor] f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f dt_us=%lu\n",
                                       loop_freq_filtered, st.angle, filtered_pos, interp_vel,
