@@ -137,7 +137,11 @@ namespace Task {
     namespace MotorTask {
 
         Motor motor;
-        ButterworthFilter filter(15, PD_LOOP_HZ);  // 15 Hz cutoff at 500 Hz sampling
+        ButterworthFilter filter(15, PD_LOOP_HZ);      // 15 Hz cutoff for target position
+        ButterworthFilter pos_filter(30, PD_LOOP_HZ);  // 30 Hz cutoff for measured dof_pos
+        ButterworthFilter vel_filter(30, PD_LOOP_HZ);  // 30 Hz cutoff for measured dof_vel
+        float filtered_dof_pos = 0.0f;  // filtered motor position (updated at PD rate)
+        float filtered_dof_vel = 0.0f;  // filtered motor velocity (updated at PD rate)
         int motor_running = false;
         unsigned long epi_start_time;
         Motor_fault_state last_fault;  // Store last received fault
@@ -268,6 +272,8 @@ namespace Task {
 
             cmd_interpolator.reset();  // Clear stale waypoints before enabling
             filter.reset();            // Clear filter state to avoid transient
+            pos_filter.reset();
+            vel_filter.reset();
             st = motor.Enable();
             motor_running = true;
             epi_start_time = millis();
@@ -560,14 +566,18 @@ namespace Task {
                 _check_remote_switch();
                 _check_commands();
 
-                // === 2. Determine target position ===
+                // === 2. Filter motor sensor readings at PD rate (500 Hz) ===
+                filtered_dof_pos = pos_filter.filter(st.angle - offset);
+                filtered_dof_vel = vel_filter.filter(st.angle_v);
+
+                // === 3. Determine target position ===
                 float interp_pos, interp_vel, interp_kp, interp_kd;
 
                 if (local_policy_active) {
                     // --- Local-policy mode (hierarchical deployment) ---
                     // Run policy every PD_SUBSTEPS ticks (100 Hz), interpolate at 500 Hz
                     if (substep == 0) {
-                        // Policy tick: build obs and run inference
+                        // Policy tick: build obs using filtered sensor data
                         float frame[LOCAL_FRAME_DIM];
 
                         float q[4] = {
@@ -584,8 +594,8 @@ namespace Task {
                         build_current_local_frame(
                             q,
                             gyro,
-                            st.angle - offset,
-                            st.angle_v,
+                            filtered_dof_pos,
+                            filtered_dof_vel,
                             frame
                         );
 
@@ -629,17 +639,17 @@ namespace Task {
                     }
                 }
 
-                // === 3. Apply Butterworth low-pass filter (optional) ===
+                // === 4. Apply Butterworth low-pass filter (optional) ===
                 float filtered_pos;
                 if (enable_filter)
                     filtered_pos = filter.filter(interp_pos);
                 else
                     filtered_pos = interp_pos;
 
-                // === 4. Send command to motor ===
+                // === 5. Send command to motor ===
                 _step(filtered_pos, interp_vel, interp_kp, interp_kd);
 
-                // === 5. Update motor error state ===
+                // === 6. Update motor error state ===
                 motor_error = st.error_state;
 
                 // Check for fault feedback frames actively sent by the motor
@@ -651,7 +661,7 @@ namespace Task {
                 _check_health();
                 _check_safety();
 
-                // === 6. Diagnostics (throttled to ~2 Hz to reduce Serial overhead) ===
+                // === 7. Diagnostics (throttled to ~2 Hz to reduce Serial overhead) ===
                 unsigned long current_time_us = micros();
                 unsigned long delta_time = current_time_us - last_loop_time;
                 last_loop_time = current_time_us;
@@ -677,7 +687,7 @@ namespace Task {
                 DEBUG_PRINT("Position");
                 DEBUG_PRINT(st.angle);
 
-                // === 7. Sleep until next tick (deterministic timing) ===
+                // === 8. Sleep until next tick (deterministic timing) ===
                 vTaskDelayUntil(&lastWakeTime, dt);
             }
         }
