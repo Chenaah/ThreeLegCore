@@ -4,8 +4,8 @@
 #include "LocalPolicy.hpp"
 #include "deploy_config.h"
 
-// Forward declaration of the global policy instance defined in main.cpp
-extern LocalPolicy local_policy;
+// Forward declaration of the global onboard-model instance defined in main.cpp
+extern LocalPolicy onboard_model;
 
 // Use type aliases for motor_control namespace types
 using CapySensorData = motor_control::SensorData;
@@ -48,8 +48,9 @@ namespace Task {
             received_data.timestamp = cmd.timestamp;
             received_data.control_mode = cmd.control_mode;
             received_data.joint_offset = cmd.joint_offset;
+            received_data.policy_hash = cmd.policy_hash;
             received_data.joint_id = cmd.joint_id;
-            memcpy(received_data.latent, cmd.latent, sizeof(cmd.latent));
+            memcpy(received_data.command_context, cmd.command_context, sizeof(cmd.command_context));
 
             // Update shared variables
             target_pos = received_data.target;
@@ -63,8 +64,13 @@ namespace Task {
             last_rcv_timestamp = received_data.timestamp;
             received_control_mode = received_data.control_mode;
             received_joint_offset = received_data.joint_offset;
+            received_policy_hash = received_data.policy_hash;
             received_joint_id = received_data.joint_id;
-            memcpy(received_latent, received_data.latent, sizeof(received_data.latent));
+            memcpy(
+                received_command_context,
+                received_data.command_context,
+                sizeof(received_data.command_context)
+            );
 
             // Push new waypoint into the interpolator for smooth 100 Hz control
             cmd_interpolator.pushCommand(
@@ -177,6 +183,22 @@ namespace Task {
             // Error data
             feedback.error.reset_reason0 = reset_reason0;
             feedback.error.reset_reason1 = reset_reason1;
+            feedback.policy_hash = ::onboard_model.get_policy_hash();
+            feedback.policy_status = policy_status_bits;
+            feedback.policy_error = policy_error_code;
+            feedback.policy_debug.valid = policy_debug_valid;
+            feedback.policy_debug.seq = policy_debug_seq;
+            feedback.policy_debug.nn_action = policy_debug_nn_action;
+            feedback.policy_debug.motor_target = policy_debug_motor_target;
+            feedback.policy_debug.joint_offset = policy_debug_joint_offset;
+            feedback.policy_debug.dof_pos = policy_debug_dof_pos;
+            feedback.policy_debug.dof_vel = policy_debug_dof_vel;
+            memcpy(
+                feedback.policy_debug.command_context,
+                policy_debug_command_context,
+                sizeof(policy_debug_command_context)
+            );
+            memcpy(feedback.policy_debug.local_obs, policy_debug_local_obs, sizeof(policy_debug_local_obs));
             
             // Goal distance (set externally)
             feedback.goal_distance = goal_distance;
@@ -204,11 +226,40 @@ namespace Task {
             data_to_send.motor.motor_error = feedback.motor.motor_error;
             data_to_send.motor.motor_mode = feedback.motor.motor_mode;
             data_to_send.motor.driver_error = feedback.motor.driver_error;
+            data_to_send.imu.orientation.x = feedback.imu.orientation.x;
+            data_to_send.imu.orientation.y = feedback.imu.orientation.y;
+            data_to_send.imu.orientation.z = feedback.imu.orientation.z;
+            data_to_send.imu.quaternion.x = feedback.imu.quaternion.x;
+            data_to_send.imu.quaternion.y = feedback.imu.quaternion.y;
+            data_to_send.imu.quaternion.z = feedback.imu.quaternion.z;
+            data_to_send.imu.quaternion.w = feedback.imu.quaternion.w;
+            data_to_send.imu.omega.x = feedback.imu.omega.x;
+            data_to_send.imu.omega.y = feedback.imu.omega.y;
+            data_to_send.imu.omega.z = feedback.imu.omega.z;
+            data_to_send.imu.acceleration.x = feedback.imu.acceleration.x;
+            data_to_send.imu.acceleration.y = feedback.imu.acceleration.y;
+            data_to_send.imu.acceleration.z = feedback.imu.acceleration.z;
+            data_to_send.policy_hash = feedback.policy_hash;
+            data_to_send.policy_status = feedback.policy_status;
+            data_to_send.policy_error = feedback.policy_error;
             data_to_send.goal_distance = feedback.goal_distance;
             data_to_send.uwb.d0 = feedback.uwb.d0;
             data_to_send.uwb.d1 = feedback.uwb.d1;
             data_to_send.uwb.d2 = feedback.uwb.d2;
             data_to_send.uwb.d3 = feedback.uwb.d3;
+            data_to_send.policy_debug.valid = feedback.policy_debug.valid;
+            data_to_send.policy_debug.seq = feedback.policy_debug.seq;
+            data_to_send.policy_debug.nn_action = feedback.policy_debug.nn_action;
+            data_to_send.policy_debug.motor_target = feedback.policy_debug.motor_target;
+            data_to_send.policy_debug.joint_offset = feedback.policy_debug.joint_offset;
+            data_to_send.policy_debug.dof_pos = feedback.policy_debug.dof_pos;
+            data_to_send.policy_debug.dof_vel = feedback.policy_debug.dof_vel;
+            memcpy(data_to_send.policy_debug.command_context,
+                   feedback.policy_debug.command_context,
+                   sizeof(feedback.policy_debug.command_context));
+            memcpy(data_to_send.policy_debug.local_obs,
+                   feedback.policy_debug.local_obs,
+                   sizeof(feedback.policy_debug.local_obs));
 
             // Publish feedback
             feedbackPub->publish(feedback);
@@ -223,6 +274,8 @@ namespace Task {
             // Setup pub/sub
             _setup_pubsub();
 
+            uint32_t last_feedback_ms = millis();
+
             while (true) {
                 // Process incoming messages
                 node->spinOnce();
@@ -231,8 +284,11 @@ namespace Task {
                 // Delay here to help the motor perform the latest commands
                 vTaskDelay(pdMS_TO_TICKS(DELAY_PERIOD));
 
-                // Send data
-                _send_data();
+                uint32_t now_ms = millis();
+                if ((now_ms - last_feedback_ms) >= FEEDBACK_PERIOD_MS) {
+                    last_feedback_ms = now_ms;
+                    _send_data();
+                }
             }
         }
     }

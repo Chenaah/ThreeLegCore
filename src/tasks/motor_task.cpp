@@ -1,15 +1,15 @@
 #include "tasks.hpp"
 #include "LocalPolicy.hpp"
 
-// Forward declaration of the global policy instance defined in main.cpp
-extern LocalPolicy local_policy;
+// Forward declaration of the global onboard-model instance defined in main.cpp
+extern LocalPolicy onboard_model;
 
-static constexpr size_t LOCAL_LATENT_HISTORY_BUFFER_STEPS =
-    (LOCAL_LATENT_HISTORY_STEPS > 0) ? LOCAL_LATENT_HISTORY_STEPS : 1;
+static constexpr size_t COMMAND_CONTEXT_HISTORY_BUFFER_STEPS =
+    (Task::COMMAND_CONTEXT_HISTORY_STEPS > 0) ? Task::COMMAND_CONTEXT_HISTORY_STEPS : 1;
 
 // Circular history rings: newest at [0], oldest at [N-1]
 static float local_frame_history[LOCAL_FRAME_HISTORY_STEPS][LOCAL_FRAME_DIM] = {};
-static float local_latent_history[LOCAL_LATENT_HISTORY_BUFFER_STEPS][LOCAL_LATENT_DIM] = {};
+static float command_context_history[COMMAND_CONTEXT_HISTORY_BUFFER_STEPS][Task::COMMAND_CONTEXT_DIM] = {};
 
 static void push_local_obs_frame(const float frame[LOCAL_FRAME_DIM]) {
     for (size_t h = LOCAL_FRAME_HISTORY_STEPS - 1; h > 0; --h) {
@@ -20,14 +20,14 @@ static void push_local_obs_frame(const float frame[LOCAL_FRAME_DIM]) {
         local_frame_history[0][d] = frame[d];
 }
 
-static void push_local_latent(const float latent[LOCAL_LATENT_DIM]) {
-    if constexpr (LOCAL_LATENT_HISTORY_STEPS > 0) {
-        for (size_t h = LOCAL_LATENT_HISTORY_STEPS - 1; h > 0; --h) {
-            for (size_t d = 0; d < LOCAL_LATENT_DIM; ++d)
-                local_latent_history[h][d] = local_latent_history[h - 1][d];
+static void push_command_context(const float command_context[Task::COMMAND_CONTEXT_DIM]) {
+    if constexpr (Task::COMMAND_CONTEXT_HISTORY_STEPS > 0) {
+        for (size_t h = Task::COMMAND_CONTEXT_HISTORY_STEPS - 1; h > 0; --h) {
+            for (size_t d = 0; d < Task::COMMAND_CONTEXT_DIM; ++d)
+                command_context_history[h][d] = command_context_history[h - 1][d];
         }
-        for (size_t d = 0; d < LOCAL_LATENT_DIM; ++d)
-            local_latent_history[0][d] = latent[d];
+        for (size_t d = 0; d < Task::COMMAND_CONTEXT_DIM; ++d)
+            command_context_history[0][d] = command_context[d];
     }
 }
 
@@ -41,11 +41,11 @@ static std::array<float, LOCAL_OBS_DIM> build_local_obs() {
             obs[out_idx++] = frame[d];
     }
 
-    if constexpr (LOCAL_LATENT_HISTORY_STEPS > 0) {
-        for (size_t h = 0; h < LOCAL_LATENT_HISTORY_STEPS; ++h) {
-            const float* latent = local_latent_history[LOCAL_LATENT_HISTORY_STEPS - 1 - h];
-            for (size_t d = 0; d < LOCAL_LATENT_DIM; ++d)
-                obs[out_idx++] = latent[d];
+    if constexpr (Task::COMMAND_CONTEXT_HISTORY_STEPS > 0) {
+        for (size_t h = 0; h < Task::COMMAND_CONTEXT_HISTORY_STEPS; ++h) {
+            const float* command_context = command_context_history[Task::COMMAND_CONTEXT_HISTORY_STEPS - 1 - h];
+            for (size_t d = 0; d < Task::COMMAND_CONTEXT_DIM; ++d)
+                obs[out_idx++] = command_context[d];
         }
     }
     return obs;
@@ -123,9 +123,21 @@ namespace Task {
     int enable_filter = 1;
     int received_control_mode = CONTROL_MODE_DIRECT_PD;
     float received_joint_offset = 0.0f;
+    int received_policy_hash = 0;
     int received_joint_id = -1;             // Action/joint index from last command (-1 = all)
-    float received_latent[LOCAL_LATENT_DIM] = {};  // Updated at 20 Hz by PC
-    bool local_policy_loaded = false;       // Set to true in setup() if policy loaded successfully
+    float received_command_context[COMMAND_CONTEXT_DIM] = {};  // Updated by the PC command stream
+    bool onboard_model_loaded = false;      // Set to true in setup() if model loads successfully
+    int policy_status_bits = 0;
+    int policy_error_code = POLICY_ERROR_NONE;
+    int policy_debug_valid = 0;
+    int policy_debug_seq = 0;
+    float policy_debug_nn_action = 0.0f;
+    float policy_debug_motor_target = 0.0f;
+    float policy_debug_joint_offset = 0.0f;
+    float policy_debug_dof_pos = 0.0f;
+    float policy_debug_dof_vel = 0.0f;
+    float policy_debug_command_context[COMMAND_CONTEXT_DIM] = {};
+    float policy_debug_local_obs[LOCAL_OBS_DIM] = {};
     std::queue<int> info_queue;
     bool motor_calibrated = false;  // Motor calibration status
 
@@ -135,6 +147,52 @@ namespace Task {
     // Config
     float offset = -1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
     const float DELTA_T = CONTROL_LOOP_DT_MS; // Control loop period in ms
+
+    static int compute_policy_status_bits() {
+        int status = 0;
+        if (::onboard_model.is_loaded())
+            status |= POLICY_STATUS_LOADED;
+        if (::onboard_model.is_sanity_ok())
+            status |= POLICY_STATUS_SANITY_OK;
+        if (received_policy_hash != 0)
+            status |= POLICY_STATUS_PC_HASH_SEEN;
+        if (::onboard_model.is_loaded() && ::onboard_model.is_build_hash_match() &&
+            received_policy_hash != 0 &&
+            ::onboard_model.get_policy_hash() == received_policy_hash) {
+            status |= POLICY_STATUS_HASH_MATCH;
+        }
+        if ((status & (POLICY_STATUS_LOADED | POLICY_STATUS_SANITY_OK |
+                       POLICY_STATUS_PC_HASH_SEEN | POLICY_STATUS_HASH_MATCH)) ==
+            (POLICY_STATUS_LOADED | POLICY_STATUS_SANITY_OK |
+             POLICY_STATUS_PC_HASH_SEEN | POLICY_STATUS_HASH_MATCH)) {
+            status |= POLICY_STATUS_RUNTIME_READY;
+        }
+        return status;
+    }
+
+    static int validate_onboard_model_runtime() {
+        policy_status_bits = compute_policy_status_bits();
+
+        if (!::onboard_model.is_loaded())
+            return POLICY_ERROR_NOT_LOADED;
+        if (!::onboard_model.is_build_hash_match())
+            return POLICY_ERROR_HASH_MISMATCH;
+        if (!::onboard_model.is_sanity_ok())
+            return POLICY_ERROR_SANITY_FAILED;
+        if (received_policy_hash == 0)
+            return POLICY_ERROR_NO_PC_HASH;
+        if (::onboard_model.get_policy_hash() != received_policy_hash)
+            return POLICY_ERROR_HASH_MISMATCH;
+        return POLICY_ERROR_NONE;
+    }
+
+    static void report_policy_error_if_needed(int error_code) {
+        policy_error_code = error_code;
+        policy_status_bits = compute_policy_status_bits();
+        if (error_code != POLICY_ERROR_NONE) {
+            send_led_message(LED_MSG_POLICY_ERROR);
+        }
+    }
 
     namespace MotorTask {
 
@@ -267,7 +325,24 @@ namespace Task {
             return safe;
         }
 
-        void _enable(){
+        bool _enable(){
+            if (received_control_mode == CONTROL_MODE_ONBOARD_MODEL) {
+                int validation_error = validate_onboard_model_runtime();
+                report_policy_error_if_needed(validation_error);
+                if (validation_error != POLICY_ERROR_NONE) {
+                    Serial.printf("[Model] Enable blocked: error=%d local_hash=%d pc_hash=%d sanity=%d\n",
+                                  validation_error,
+                                  ::onboard_model.get_policy_hash(),
+                                  received_policy_hash,
+                                  ::onboard_model.is_sanity_ok() ? 1 : 0);
+                    enqueue(info_queue, 401 + validation_error);
+                    return false;
+                }
+            } else {
+                policy_error_code = POLICY_ERROR_NONE;
+                policy_status_bits = compute_policy_status_bits();
+            }
+
             DEBUG_PRINT("motor.Enable()");
             send_led_message(LED_MSG_MOTOR_ON);
             enqueue(info_queue, 301);
@@ -279,6 +354,7 @@ namespace Task {
             st = motor.Enable();
             motor_running = true;
             epi_start_time = millis();
+            return true;
         }
 
         void _disable(){
@@ -295,7 +371,7 @@ namespace Task {
             if (motor_running && ! enable)
                 _disable();
             else if (!motor_running && enable)
-                _enable();
+                return _enable();
             return motor_running;
         }
 
@@ -556,7 +632,7 @@ namespace Task {
             float last_torque_cmd = 0.0f;
             const float MAX_TORQUE_RATE = 50.0f * CONTROL_LOOP_DT_S; // max torque change per tick (N.m/tick)
 
-            // Interpolation state for local-policy mode
+            // Interpolation state for onboard-model mode
             float prev_policy_target = 0.0f;  // target from previous policy tick
             float curr_policy_target = 0.0f;  // target from current policy tick
             int substep = 0;                   // counts 0..PD_SUBSTEPS-1
@@ -575,26 +651,49 @@ namespace Task {
                 // === 3. Determine target position ===
                 float interp_pos, interp_vel, interp_kp, interp_kd;
 
-                const bool use_local_policy =
-                    (received_control_mode == CONTROL_MODE_LOCAL_POLICY) && local_policy_loaded;
+                bool use_onboard_model =
+                    (received_control_mode == CONTROL_MODE_ONBOARD_MODEL) && onboard_model_loaded;
 
-                if (use_local_policy) {
-                    // --- Local-policy mode (hierarchical deployment) ---
-                    // Run policy every PD_SUBSTEPS ticks (100 Hz), interpolate at 500 Hz
+                if (use_onboard_model) {
+                    int validation_error = validate_onboard_model_runtime();
+                    report_policy_error_if_needed(validation_error);
+                    if (validation_error != POLICY_ERROR_NONE) {
+                        if (motor_running) {
+                            Serial.printf("[Model] Runtime validation failed: error=%d local_hash=%d pc_hash=%d\n",
+                                          validation_error,
+                                          ::onboard_model.get_policy_hash(),
+                                          received_policy_hash);
+                            _disable();
+                            send_led_message(LED_MSG_POLICY_ERROR);
+                        }
+                        use_onboard_model = false;
+                    }
+                } else {
+                    if (received_control_mode != CONTROL_MODE_ONBOARD_MODEL) {
+                        policy_error_code = POLICY_ERROR_NONE;
+                    }
+                    policy_status_bits = compute_policy_status_bits();
+                    policy_debug_valid = 0;
+                }
+
+                if (use_onboard_model) {
+                    // --- Onboard-model mode ---
+                    // Run the model every PD_SUBSTEPS ticks (100 Hz), interpolate at 500 Hz
                     if (substep == 0) {
-                        // Policy tick: build obs using filtered sensor data
+                        // Model tick: build obs using filtered sensor data
                         float frame[LOCAL_FRAME_DIM];
 
+                        // Use the latest IMU task outputs directly for the 100 Hz onboard model.
                         float q[4] = {
-                            CommTask::data_to_send.imu.quaternion.x,
-                            CommTask::data_to_send.imu.quaternion.y,
-                            CommTask::data_to_send.imu.quaternion.z,
-                            CommTask::data_to_send.imu.quaternion.w,
+                            quat_imu[0],
+                            quat_imu[1],
+                            quat_imu[2],
+                            quat_imu[3],
                         };
                         float gyro[3] = {
-                            CommTask::data_to_send.imu.omega.x,
-                            CommTask::data_to_send.imu.omega.y,
-                            CommTask::data_to_send.imu.omega.z,
+                            ang_vel_imu[0],
+                            ang_vel_imu[1],
+                            ang_vel_imu[2],
                         };
                         build_current_local_frame(
                             q,
@@ -605,19 +704,28 @@ namespace Task {
                         );
 
                         push_local_obs_frame(frame);
-                        push_local_latent(received_latent);
+                        push_command_context(received_command_context);
 
                         std::array<float, LOCAL_OBS_DIM> local_obs = build_local_obs();
 
-                        std::array<float, LOCAL_LATENT_DIM> latent_arr{};
-                        for (size_t i = 0; i < LOCAL_LATENT_DIM; ++i)
-                            latent_arr[i] = received_latent[i];
+                        std::array<float, COMMAND_CONTEXT_DIM> command_context{};
+                        for (size_t i = 0; i < COMMAND_CONTEXT_DIM; ++i)
+                            command_context[i] = received_command_context[i];
 
-                        float motor_target = ::local_policy.select_action(
-                            latent_arr,
-                            local_obs,
-                            received_joint_offset
-                        );
+                        float nn_action = ::onboard_model.forward_nn(command_context, local_obs);
+                        float motor_target = nn_action + received_joint_offset;
+
+                        policy_debug_valid = 1;
+                        policy_debug_seq += 1;
+                        policy_debug_nn_action = nn_action;
+                        policy_debug_motor_target = motor_target;
+                        policy_debug_joint_offset = received_joint_offset;
+                        policy_debug_dof_pos = filtered_dof_pos;
+                        policy_debug_dof_vel = filtered_dof_vel;
+                        for (size_t i = 0; i < COMMAND_CONTEXT_DIM; ++i)
+                            policy_debug_command_context[i] = command_context[i];
+                        for (size_t i = 0; i < LOCAL_OBS_DIM; ++i)
+                            policy_debug_local_obs[i] = local_obs[i];
 
                         // Shift targets for interpolation
                         prev_policy_target = curr_policy_target;
@@ -682,16 +790,22 @@ namespace Task {
                 if (now_ms - last_print_time >= 500) {
                     last_print_time = now_ms;
                     unsigned long time_total = micros() - t_start;
-                    if (use_local_policy) {
-                        Serial.printf("[Motor/NN] mode=%d f=%.1fHz pos=%.3f target=%.3f offset=%.3f latent[0]=%.3f sub=%d dt_us=%lu\n",
+                    if (use_onboard_model) {
+                        Serial.printf("[Motor/NN] mode=%d f=%.1fHz pos=%.3f target=%.3f offset=%.3f ctx[0]=%.3f hash=%d/%d status=0x%x err=%d sub=%d dt_us=%lu\n",
                                       received_control_mode,
                                       loop_freq_filtered, st.angle, filtered_pos,
-                                      received_joint_offset, received_latent[0], substep, time_total);
+                                      received_joint_offset, received_command_context[0],
+                                      ::onboard_model.get_policy_hash(), received_policy_hash,
+                                      policy_status_bits, policy_error_code,
+                                      substep, time_total);
                     } else {
-                        Serial.printf("[Motor] mode=%d f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f dt_us=%lu\n",
+                        Serial.printf("[Motor] mode=%d f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f hash=%d/%d status=0x%x err=%d dt_us=%lu\n",
                                       received_control_mode,
                                       loop_freq_filtered, st.angle, filtered_pos, interp_vel,
-                                      interp_kp, interp_kd, time_total);
+                                      interp_kp, interp_kd,
+                                      ::onboard_model.get_policy_hash(), received_policy_hash,
+                                      policy_status_bits, policy_error_code,
+                                      time_total);
                     }
                 }
 

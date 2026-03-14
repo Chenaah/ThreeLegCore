@@ -95,5 +95,16 @@ void send_led_message(int msg) {
             motor_error_flag = !motor_error_flag;
             lastTime = currentTime;
         }
+    } else if (msg == LED_MSG_POLICY_ERROR){
+        // Purple blink: policy hash/sanity validation failed
+        if (motor_error_flag == false){
+            set_led_color(255, 0, 255);
+        } else {
+            set_led_color(0, 0, 0);
+        }
+        if (currentTime - lastTime >= 200) {
+            motor_error_flag = !motor_error_flag;
+            lastTime = currentTime;
+        }
     }
 }

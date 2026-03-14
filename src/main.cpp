@@ -3,8 +3,8 @@
 #include "LocalPolicy.hpp"
 #include <driver/spi_master.h>
 
-// Global policy instance (accessible from other tasks if needed)
-LocalPolicy local_policy;
+// Global onboard-model instance (accessible from other tasks if needed)
+LocalPolicy onboard_model;
 
 void setup() {
     Serial.begin(115200);
@@ -36,24 +36,35 @@ void setup() {
 
     set_module_id();
 
-    // --- Load local policy from LittleFS ---
-    Serial.println("\n====== Loading Local Policy ======");
+    // --- Load onboard model from LittleFS ---
+    Serial.println("\n====== Loading Onboard Model ======");
 
     // Fallback only for sanity checks and offline debugging.
     // During live hierarchical control, the PC sends the joint offset explicitly
     // in every MotorCommand, so the ESP32 does not depend on hardcoded mapping.
-    local_policy.set_module_index(0);
+    onboard_model.set_module_index(0);
 
-    if (local_policy.load_from_littlefs()) {
+    if (onboard_model.load_from_littlefs()) {
         // Run sanity check with reference values generated alongside the deploy headers.
-        local_policy.run_sanity_check(
+        bool sanity_ok = onboard_model.run_sanity_check(
             DEPLOY_SANITY_EXPECTED_MEAN,
             DEPLOY_SANITY_EXPECTED_ACTION
         );
-        Task::local_policy_loaded = true;
-        Serial.println("[Setup] Local policy loaded: waiting for PC control_mode to activate NN.");
+        Task::onboard_model_loaded = true;
+        if (!onboard_model.is_build_hash_match()) {
+            Task::policy_error_code = Task::POLICY_ERROR_HASH_MISMATCH;
+            send_led_message(LED_MSG_POLICY_ERROR);
+            Serial.println("[Setup] Onboard-model hash mismatch against build header.");
+        } else if (sanity_ok) {
+            Serial.println("[Setup] Onboard model loaded: waiting for PC control_mode to activate NN.");
+        } else {
+            Task::policy_error_code = Task::POLICY_ERROR_SANITY_FAILED;
+            send_led_message(LED_MSG_POLICY_ERROR);
+            Serial.println("[Setup] Onboard-model sanity check FAILED.");
+        }
     } else {
-        Serial.println("WARNING: Local policy not loaded, running without NN");
+        Task::policy_error_code = Task::POLICY_ERROR_NOT_LOADED;
+        Serial.println("WARNING: Onboard model not loaded, running without NN");
     }
     Serial.println("==================================\n");
 
@@ -69,45 +80,45 @@ void setup() {
 
 void loop() {
     vTaskDelete(NULL);
-    // if (!local_policy.is_loaded()) {
+    // if (!onboard_model.is_loaded()) {
     //     delay(5000);
     //     return;
     // }
 
-    // // Use the latest received latent from comm_task if available,
+    // // Use the latest received command context from comm_task if available,
     // // otherwise fall back to hardcoded demo values.
-    // std::array<float, LOCAL_LATENT_DIM> latent;
-    // bool latent_from_network = false;
+    // std::array<float, Task::COMMAND_CONTEXT_DIM> command_context;
+    // bool context_from_network = false;
 
     // // Task::received_joint_id >= 0 means a real command with joint_id has arrived
     // if (Task::received_joint_id >= 0) {
-    //     for (size_t i = 0; i < LOCAL_LATENT_DIM; i++) {
-    //         latent[i] = Task::received_latent[i];
+    //     for (size_t i = 0; i < Task::COMMAND_CONTEXT_DIM; i++) {
+    //         command_context[i] = Task::received_command_context[i];
     //     }
-    //     latent_from_network = true;
+    //     context_from_network = true;
     // } else {
-    //     // Demo: hardcoded latent when no network command has been received
-    //     latent = {0.5f, -0.3f, 0.1f, 0.0f, 0.2f, -0.1f, 0.4f, -0.2f};
+    //     // Demo: hardcoded command context when no network command has been received
+    //     command_context = {0.5f, -0.3f, 0.1f, 0.0f, 0.2f, -0.1f, 0.4f, -0.2f};
     // }
 
     // std::array<float, LOCAL_OBS_DIM> obs = {};  // zeros = placeholder sensor data
 
     // // forward_nn: raw NN output in [-0.8, 0.8], no offset
-    // float nn_action = local_policy.forward_nn(latent, obs);
+    // float nn_action = onboard_model.forward_nn(command_context, obs);
 
     // // select_action: NN output + default_dof_pos[module_idx] = motor target
-    // float motor_target = local_policy.select_action(latent, obs);
+    // float motor_target = onboard_model.select_action(command_context, obs);
 
-    // if (latent_from_network) {
-    //     Serial.printf("[Loop] Using network latent (joint_id=%d): [%.3f, %.3f, %.3f, ...]\n",
-    //                   Task::received_joint_id, latent[0], latent[1], latent[2]);
+    // if (context_from_network) {
+    //     Serial.printf("[Loop] Using network context (joint_id=%d): [%.3f, %.3f, %.3f, ...]\n",
+    //                   Task::received_joint_id, command_context[0], command_context[1], command_context[2]);
     // } else {
-    //     Serial.println("[Loop] Running policy with hardcoded demo latent...");
+    //     Serial.println("[Loop] Running model with hardcoded demo context...");
     // }
     // Serial.printf("[Loop] NN action:     %.6f (in [-0.8, 0.8])\n", nn_action);
     // Serial.printf("[Loop] Motor target:  %.6f (NN + default_dof_pos[%d]=%.4f)\n",
-    //               motor_target, local_policy.get_module_index(),
-    //               DEPLOY_DEFAULT_DOF_POS[local_policy.get_module_index()]);
+    //               motor_target, onboard_model.get_module_index(),
+    //               DEPLOY_DEFAULT_DOF_POS[onboard_model.get_module_index()]);
 
     // delay(5000);  // Print every 5 seconds
 }

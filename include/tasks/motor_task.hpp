@@ -163,10 +163,28 @@ struct CommandInterpolator {
 
 
 namespace Task {
+    constexpr size_t COMMAND_CONTEXT_DIM = LOCAL_LATENT_DIM;
+    constexpr size_t COMMAND_CONTEXT_HISTORY_STEPS = LOCAL_LATENT_HISTORY_STEPS;
 
     enum ControlMode : int32_t {
         CONTROL_MODE_DIRECT_PD = 0,
-        CONTROL_MODE_LOCAL_POLICY = 1,
+        CONTROL_MODE_ONBOARD_MODEL = 1,
+    };
+
+    enum PolicyStatusBits : int32_t {
+        POLICY_STATUS_LOADED = 1 << 0,
+        POLICY_STATUS_SANITY_OK = 1 << 1,
+        POLICY_STATUS_PC_HASH_SEEN = 1 << 2,
+        POLICY_STATUS_HASH_MATCH = 1 << 3,
+        POLICY_STATUS_RUNTIME_READY = 1 << 4,
+    };
+
+    enum PolicyErrorCode : int32_t {
+        POLICY_ERROR_NONE = 0,
+        POLICY_ERROR_NOT_LOADED = 1,
+        POLICY_ERROR_SANITY_FAILED = 2,
+        POLICY_ERROR_NO_PC_HASH = 3,
+        POLICY_ERROR_HASH_MISMATCH = 4,
     };
 
     // Data
@@ -190,11 +208,23 @@ namespace Task {
     extern int enable_filter;
     extern int received_control_mode;       // Control mode from last command
     extern float received_joint_offset;     // Per-joint offset from last command
+    extern int received_policy_hash;        // Expected policy hash from the PC
     extern int received_joint_id;            // Action/joint index from last command (-1 = all)
-    extern float received_latent[LOCAL_LATENT_DIM];  // Updated at 20 Hz by PC
+    extern float received_command_context[COMMAND_CONTEXT_DIM];  // Updated by the PC command stream
 
-    // Whether the local policy weights are loaded and available to use.
-    extern bool local_policy_loaded;
+    // Whether the onboard model weights are loaded and available to use.
+    extern bool onboard_model_loaded;
+    extern int policy_status_bits;
+    extern int policy_error_code;
+    extern int policy_debug_valid;
+    extern int policy_debug_seq;
+    extern float policy_debug_nn_action;
+    extern float policy_debug_motor_target;
+    extern float policy_debug_joint_offset;
+    extern float policy_debug_dof_pos;
+    extern float policy_debug_dof_vel;
+    extern float policy_debug_command_context[COMMAND_CONTEXT_DIM];
+    extern float policy_debug_local_obs[LOCAL_OBS_DIM];
 
     // Command interpolator (shared so comm_task can push commands)
     extern CommandInterpolator cmd_interpolator;

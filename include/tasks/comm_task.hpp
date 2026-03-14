@@ -26,10 +26,11 @@ struct MotorCommand {
     int calibrate;
     int restart;
     float timestamp;
-    int control_mode;     // 0=direct PD target from PC, 1=ESP32 local policy
+    int control_mode;     // 0=direct PD target from PC, 1=ESP32 onboard model
     float joint_offset;   // Per-joint default offset (radians), sent explicitly by PC
+    int policy_hash;      // Positive int32 FNV-1a hash of the expected onboard-model weights
     int joint_id;         // Action/joint index this command targets (0-based); -1 = all
-    float latent[8];      // Latent vector from master policy; all zeros for legacy usage
+    float command_context[8];  // Auxiliary command context; all zeros when unused
 };
 
 // Legacy alias for compatibility
@@ -72,6 +73,18 @@ struct UWBDistances {
     float d3;  // Distance to anchor 3 (meters)
 };
 
+struct PolicyDebugData {
+    int valid;             // 1 when debug data is populated
+    int seq;               // Monotonic onboard-model tick counter
+    float nn_action;       // Raw onboard-model action in [-0.8, 0.8]
+    float motor_target;    // Final motor target after adding joint_offset
+    float joint_offset;    // Joint offset applied on ESP32
+    float dof_pos;         // Filtered joint position used by the onboard model
+    float dof_vel;         // Filtered joint velocity used by the onboard model
+    float command_context[8];  // Latest command context used by the onboard model
+    float local_obs[40];   // Full onboard-model observation history for current deploy config
+};
+
 struct SensorData {
     int module_id;
     int receive_dt;
@@ -82,8 +95,12 @@ struct SensorData {
     MotorData motor;
     IMUData imu;
     ErrorData error;
+    int policy_hash;
+    int policy_status;
+    int policy_error;
     float goal_distance;  // Distance to goal (meters), updated externally
     UWBDistances uwb;     // UWB distance measurements
+    PolicyDebugData policy_debug;
 };
 
 // Legacy alias for compatibility
