@@ -206,10 +206,10 @@ namespace Task {
     extern float command_kp;
     extern float command_kd;
     extern int enable_filter;
-    extern int received_control_mode;       // Control mode from last command
-    extern float received_joint_offset;     // Per-joint offset from last command
-    extern int received_policy_hash;        // Expected policy hash from the PC
-    extern int received_joint_id;            // Action/joint index from last command (-1 = all)
+    extern volatile int received_control_mode;       // Control mode from last command
+    extern volatile float received_joint_offset;     // Per-joint offset from last command
+    extern volatile int received_policy_hash;        // Expected policy hash from the PC
+    extern volatile int received_joint_id;            // Action/joint index from last command (-1 = all)
     extern float received_command_context[COMMAND_CONTEXT_DIM];  // Updated by the PC command stream
 
     // Whether the onboard model weights are loaded and available to use.

@@ -34,8 +34,24 @@
 #include <functional>
 #include <cstring>
 #include <vector>
+#include <type_traits>
 
 namespace cpy {
+
+// GCC 8 compatible SFINAE helpers (replaces C++20 requires)
+template<typename, typename = void>
+struct has_serialize : std::false_type {};
+
+template<typename T>
+struct has_serialize<T, std::void_t<decltype(std::declval<const T&>().serialize((uint8_t*)nullptr))>>
+    : std::true_type {};
+
+template<typename, typename = void>
+struct has_fromBytes : std::false_type {};
+
+template<typename T>
+struct has_fromBytes<T, std::void_t<decltype(T::fromBytes((uint8_t*)nullptr, size_t(0)))>>
+    : std::true_type {};
 
 // Forward declarations
 template<typename T> class Publisher;
@@ -245,7 +261,7 @@ public:
         }
         
         // Use serialize() if available, otherwise raw memory
-        if constexpr (requires { msg.serialize((uint8_t*)nullptr); }) {
+        if constexpr (has_serialize<T>::value) {
             uint8_t buffer[sizeof(T)];
             msg.serialize(buffer);
             _udp.write(buffer, sizeof(T));
@@ -399,7 +415,7 @@ public:
         
         T msg;
         // Use fromBytes() if available, otherwise deserialize()
-        if constexpr (requires { T::fromBytes(buffer, sizeof(T)); }) {
+        if constexpr (has_fromBytes<T>::value) {
             msg = T::fromBytes(buffer, sizeof(T));
         } else {
             memcpy(&msg, buffer, sizeof(T));
@@ -447,7 +463,7 @@ public:
         uint8_t buffer[sizeof(T)];
         _udp.read(buffer, sizeof(T));
         
-        if constexpr (requires { T::fromBytes(buffer, sizeof(T)); }) {
+        if constexpr (has_fromBytes<T>::value) {
             msg = T::fromBytes(buffer, sizeof(T));
         } else {
             memcpy(&msg, buffer, sizeof(T));

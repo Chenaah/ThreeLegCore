@@ -121,15 +121,23 @@ namespace Task {
     float command_kp = 0;
     float command_kd = 0;
     int enable_filter = 1;
-    int received_control_mode = CONTROL_MODE_DIRECT_PD;
-    float received_joint_offset = 0.0f;
-    int received_policy_hash = 0;
-    int received_joint_id = -1;             // Action/joint index from last command (-1 = all)
+    // Variables written by CommTask (core 0) and read by MotorTask (core 1)
+    // Must be volatile to prevent compiler caching in registers across loop iterations
+    volatile int received_control_mode = CONTROL_MODE_DIRECT_PD;
+    volatile float received_joint_offset = 0.0f;
+    volatile int received_policy_hash = 0;
+    volatile int received_joint_id = -1;             // Action/joint index from last command (-1 = all)
     float received_command_context[COMMAND_CONTEXT_DIM] = {};  // Updated by the PC command stream
     bool onboard_model_loaded = false;      // Set to true in setup() if model loads successfully
     int policy_status_bits = 0;
     int policy_error_code = POLICY_ERROR_NONE;
     int policy_debug_valid = 0;
+
+    // Latched values: once set, these persist even if subsequent commands send 0.
+    // This prevents interleaved control_mode=0 / policy_hash=0 commands from
+    // the PC (e.g. from RealMetaMachine internal methods) from reverting the mode.
+    bool onboard_mode_latched = false;
+    int latched_policy_hash = 0;
     int policy_debug_seq = 0;
     float policy_debug_nn_action = 0.0f;
     float policy_debug_motor_target = 0.0f;
@@ -148,17 +156,19 @@ namespace Task {
     float offset = -1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
     const float DELTA_T = CONTROL_LOOP_DT_MS; // Control loop period in ms
 
-    static int compute_policy_status_bits() {
+    static int compute_policy_status_bits(int pc_hash = 0) {
+        // If no explicit hash passed, fall back to received_policy_hash
+        int hash_to_check = (pc_hash != 0) ? pc_hash : (int)received_policy_hash;
         int status = 0;
         if (::onboard_model.is_loaded())
             status |= POLICY_STATUS_LOADED;
         if (::onboard_model.is_sanity_ok())
             status |= POLICY_STATUS_SANITY_OK;
-        if (received_policy_hash != 0)
+        if (hash_to_check != 0)
             status |= POLICY_STATUS_PC_HASH_SEEN;
         if (::onboard_model.is_loaded() && ::onboard_model.is_build_hash_match() &&
-            received_policy_hash != 0 &&
-            ::onboard_model.get_policy_hash() == received_policy_hash) {
+            hash_to_check != 0 &&
+            ::onboard_model.get_policy_hash() == hash_to_check) {
             status |= POLICY_STATUS_HASH_MATCH;
         }
         if ((status & (POLICY_STATUS_LOADED | POLICY_STATUS_SANITY_OK |
@@ -170,8 +180,10 @@ namespace Task {
         return status;
     }
 
-    static int validate_onboard_model_runtime() {
-        policy_status_bits = compute_policy_status_bits();
+    static int validate_onboard_model_runtime(int pc_hash = 0) {
+        // Use latched hash if provided, fall back to received_policy_hash
+        int hash_to_check = (pc_hash != 0) ? pc_hash : (int)received_policy_hash;
+        policy_status_bits = compute_policy_status_bits(hash_to_check);
 
         if (!::onboard_model.is_loaded())
             return POLICY_ERROR_NOT_LOADED;
@@ -179,9 +191,9 @@ namespace Task {
             return POLICY_ERROR_HASH_MISMATCH;
         if (!::onboard_model.is_sanity_ok())
             return POLICY_ERROR_SANITY_FAILED;
-        if (received_policy_hash == 0)
+        if (hash_to_check == 0)
             return POLICY_ERROR_NO_PC_HASH;
-        if (::onboard_model.get_policy_hash() != received_policy_hash)
+        if (::onboard_model.get_policy_hash() != hash_to_check)
             return POLICY_ERROR_HASH_MISMATCH;
         return POLICY_ERROR_NONE;
     }
@@ -326,14 +338,15 @@ namespace Task {
         }
 
         bool _enable(){
-            if (received_control_mode == CONTROL_MODE_ONBOARD_MODEL) {
-                int validation_error = validate_onboard_model_runtime();
+            // Use latched mode check (not raw received_control_mode which flaps)
+            if (onboard_mode_latched) {
+                int validation_error = validate_onboard_model_runtime(latched_policy_hash);
                 report_policy_error_if_needed(validation_error);
                 if (validation_error != POLICY_ERROR_NONE) {
-                    Serial.printf("[Model] Enable blocked: error=%d local_hash=%d pc_hash=%d sanity=%d\n",
+                    Serial.printf("[Model] Enable blocked: error=%d local_hash=%d pc_hash=%d(latched) sanity=%d\n",
                                   validation_error,
                                   ::onboard_model.get_policy_hash(),
-                                  received_policy_hash,
+                                  latched_policy_hash,
                                   ::onboard_model.is_sanity_ok() ? 1 : 0);
                     enqueue(info_queue, 401 + validation_error);
                     return false;
@@ -651,11 +664,18 @@ namespace Task {
                 // === 3. Determine target position ===
                 float interp_pos, interp_vel, interp_kp, interp_kd;
 
-                bool use_onboard_model =
-                    (received_control_mode == CONTROL_MODE_ONBOARD_MODEL) && onboard_model_loaded;
+                // Update latched values (namespace-scope, shared with _enable())
+                if (received_control_mode == CONTROL_MODE_ONBOARD_MODEL) {
+                    onboard_mode_latched = true;
+                }
+                if (received_policy_hash != 0) {
+                    latched_policy_hash = received_policy_hash;
+                }
+
+                bool use_onboard_model = onboard_mode_latched && onboard_model_loaded;
 
                 if (use_onboard_model) {
-                    int validation_error = validate_onboard_model_runtime();
+                    int validation_error = validate_onboard_model_runtime(latched_policy_hash);
                     report_policy_error_if_needed(validation_error);
                     if (validation_error != POLICY_ERROR_NONE) {
                         if (motor_running) {
@@ -669,10 +689,10 @@ namespace Task {
                         use_onboard_model = false;
                     }
                 } else {
-                    if (received_control_mode != CONTROL_MODE_ONBOARD_MODEL) {
+                    if (!onboard_mode_latched) {
                         policy_error_code = POLICY_ERROR_NONE;
                     }
-                    policy_status_bits = compute_policy_status_bits();
+                    policy_status_bits = compute_policy_status_bits(latched_policy_hash);
                     policy_debug_valid = 0;
                 }
 

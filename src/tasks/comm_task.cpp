@@ -63,6 +63,8 @@ namespace Task {
             restart_command = received_data.restart;
             last_rcv_timestamp = received_data.timestamp;
             received_control_mode = received_data.control_mode;
+            Serial.print("!!!!!!!!!");
+            Serial.print(received_control_mode);
             received_joint_offset = received_data.joint_offset;
             received_policy_hash = received_data.policy_hash;
             received_joint_id = received_data.joint_id;

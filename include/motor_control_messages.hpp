@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include "local_obs_config.h"  // For LOCAL_OBS_DIM
 
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -462,9 +463,9 @@ struct PolicyDebugData {
     float dof_pos = 0.0f;  ///< Filtered joint position used by the onboard model
     float dof_vel = 0.0f;  ///< Filtered joint velocity used by the onboard model
     float command_context[8];  ///< Latest command context used by the onboard model
-    float local_obs[40];  ///< Full onboard-model observation history (current deploy config)
+    float local_obs[LOCAL_OBS_DIM];  ///< Full onboard-model observation history (current deploy config)
 
-    static constexpr size_t SIZE = 220;
+    static constexpr size_t SIZE = 60 + LOCAL_OBS_DIM * 4;
 
     /**
      * @brief Serialize struct to byte buffer
@@ -499,7 +500,7 @@ struct PolicyDebugData {
     }
 };
 #pragma pack(pop)
-static_assert(sizeof(PolicyDebugData) == 220, "Size mismatch for PolicyDebugData");
+static_assert(sizeof(PolicyDebugData) == 60 + LOCAL_OBS_DIM * 4, "Size mismatch for PolicyDebugData");
 
 /** Complete sensor data from robot module */
 #pragma pack(push, 1)
@@ -520,7 +521,7 @@ struct SensorData {
     UWBDistances uwb;  ///< UWB distance measurements
     PolicyDebugData policy_debug;  ///< Optional onboard-model debug snapshot
 
-    static constexpr size_t SIZE = 376;
+    static constexpr size_t SIZE = 156 + PolicyDebugData::SIZE;
 
     /**
      * @brief Serialize struct to byte buffer
@@ -555,7 +556,7 @@ struct SensorData {
     }
 };
 #pragma pack(pop)
-static_assert(sizeof(SensorData) == 376, "Size mismatch for SensorData");
+static_assert(sizeof(SensorData) == 156 + sizeof(PolicyDebugData), "Size mismatch for SensorData");
 
 } // namespace motor_control
 

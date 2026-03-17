@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Arduino.h"
+#include "local_obs_config.h"  // For LOCAL_OBS_DIM
 #include <WiFi.h>
 #include <unistd.h>
 #include <netinet/in.h>
@@ -12,7 +13,7 @@
 
 #define WIFI_SSID "Device-Northwestern" //"Xenobot3" //"RovingXenobot" //"NUMSR" //  
 #define WIFI_PW "" //"Xenobotlab" // "RovingXenobot" //"" // "robotics!" // 
-#define SERVER_IP "129.105.69.100" //"129.105.73.204" // "129.105.73.189" //"129.105.73.235" //"129.105.73.251" //"192.168.1.57" //  "129.105.69.124" //
+#define SERVER_IP "129.105.73.204" // "129.105.69.100" //"129.105.73.189" //"129.105.73.235" //"129.105.73.251" //"192.168.1.57" //  "129.105.69.124" //
 #define SERVER_PORT 6666
 #define CLIENT_PORT 6666
 
@@ -82,7 +83,7 @@ struct PolicyDebugData {
     float dof_pos;         // Filtered joint position used by the onboard model
     float dof_vel;         // Filtered joint velocity used by the onboard model
     float command_context[8];  // Latest command context used by the onboard model
-    float local_obs[40];   // Full onboard-model observation history for current deploy config
+    float local_obs[LOCAL_OBS_DIM];   // Full onboard-model observation history for current deploy config
 };
 
 struct SensorData {
