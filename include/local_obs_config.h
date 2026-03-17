@@ -13,15 +13,27 @@ enum class LocalObsField : uint8_t {
     DofVel,
 };
 
-constexpr size_t LOCAL_LATENT_DIM = 8;
+constexpr size_t LOCAL_LATENT_DIM = 0;
 constexpr size_t LOCAL_FRAME_HISTORY_STEPS = 5;
-constexpr size_t LOCAL_LATENT_HISTORY_STEPS = 5;
-constexpr size_t LOCAL_FRAME_COMPONENT_COUNT = 2;
+constexpr size_t LOCAL_LATENT_HISTORY_STEPS = 0;
+constexpr size_t LOCAL_TRANSPORT_COMMAND_CONTEXT_DIM = 8;
+constexpr size_t LOCAL_TRANSPORT_DEBUG_OBS_DIM = 40;
+constexpr size_t LOCAL_FRAME_COMPONENT_COUNT = 4;
 constexpr LocalObsField LOCAL_FRAME_COMPONENTS[LOCAL_FRAME_COMPONENT_COUNT] = {
+    LocalObsField::ProjectedGravity,
+    LocalObsField::Gyro,
     LocalObsField::DofPos,
     LocalObsField::DofVel
 };
-constexpr size_t LOCAL_FRAME_DIM = 2;
-constexpr size_t LOCAL_OBS_DIM = 50;
+constexpr size_t LOCAL_FRAME_DIM = 8;
+constexpr size_t LOCAL_OBS_DIM = 40;
+constexpr size_t LOCAL_DEBUG_COMMAND_CONTEXT_DIM =
+    (LOCAL_LATENT_DIM < LOCAL_TRANSPORT_COMMAND_CONTEXT_DIM)
+        ? LOCAL_LATENT_DIM
+        : LOCAL_TRANSPORT_COMMAND_CONTEXT_DIM;
+constexpr size_t LOCAL_DEBUG_OBS_DIM =
+    (LOCAL_OBS_DIM < LOCAL_TRANSPORT_DEBUG_OBS_DIM)
+        ? LOCAL_OBS_DIM
+        : LOCAL_TRANSPORT_DEBUG_OBS_DIM;
 
 #endif // LOCAL_OBS_CONFIG_H

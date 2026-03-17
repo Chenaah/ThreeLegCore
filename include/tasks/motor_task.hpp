@@ -164,7 +164,11 @@ struct CommandInterpolator {
 
 namespace Task {
     constexpr size_t COMMAND_CONTEXT_DIM = LOCAL_LATENT_DIM;
+    constexpr size_t COMMAND_CONTEXT_STORAGE_DIM =
+        (COMMAND_CONTEXT_DIM > 0) ? COMMAND_CONTEXT_DIM : 1;
     constexpr size_t COMMAND_CONTEXT_HISTORY_STEPS = LOCAL_LATENT_HISTORY_STEPS;
+    constexpr size_t POLICY_DEBUG_COMMAND_CONTEXT_STORAGE_DIM =
+        (LOCAL_DEBUG_COMMAND_CONTEXT_DIM > 0) ? LOCAL_DEBUG_COMMAND_CONTEXT_DIM : 1;
 
     enum ControlMode : int32_t {
         CONTROL_MODE_DIRECT_PD = 0,
@@ -210,7 +214,7 @@ namespace Task {
     extern float received_joint_offset;     // Per-joint offset from last command
     extern int received_policy_hash;        // Expected policy hash from the PC
     extern int received_joint_id;            // Action/joint index from last command (-1 = all)
-    extern float received_command_context[COMMAND_CONTEXT_DIM];  // Updated by the PC command stream
+    extern float received_command_context[COMMAND_CONTEXT_STORAGE_DIM];  // Updated by the PC command stream
 
     // Whether the onboard model weights are loaded and available to use.
     extern bool onboard_model_loaded;
@@ -223,7 +227,7 @@ namespace Task {
     extern float policy_debug_joint_offset;
     extern float policy_debug_dof_pos;
     extern float policy_debug_dof_vel;
-    extern float policy_debug_command_context[COMMAND_CONTEXT_DIM];
+    extern float policy_debug_command_context[POLICY_DEBUG_COMMAND_CONTEXT_STORAGE_DIM];
     extern float policy_debug_local_obs[LOCAL_OBS_DIM];
 
     // Command interpolator (shared so comm_task can push commands)

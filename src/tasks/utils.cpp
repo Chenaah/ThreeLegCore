@@ -106,5 +106,8 @@ void send_led_message(int msg) {
             motor_error_flag = !motor_error_flag;
             lastTime = currentTime;
         }
+    } else if (msg == LED_MSG_POLICY_ACTIVE){
+        // Cyan: onboard policy is validated and actively running
+        set_led_color(0, 220, 255);
     }
 }

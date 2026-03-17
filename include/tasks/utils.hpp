@@ -21,6 +21,7 @@
 #define LED_MSG_UNSAFE 8
 #define LED_MSG_WAIT_HELP 9
 #define LED_MSG_POLICY_ERROR 10
+#define LED_MSG_POLICY_ACTIVE 11
 
 void enqueue(std::queue<int> &queue, int value);
 

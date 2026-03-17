@@ -268,7 +268,9 @@ public:
 
         std::array<float, LOCAL_LATENT_DIM> latent{};
         std::array<float, LOCAL_OBS_DIM> local_obs{};
-        latent[0] = 1.0f;
+        if constexpr (LOCAL_LATENT_DIM > 0) {
+            latent[0] = 1.0f;
+        }
         local_obs[0] = 0.5f;
 
         std::array<float, LOCAL_INPUT_DIM> input{};

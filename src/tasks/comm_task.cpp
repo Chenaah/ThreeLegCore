@@ -3,6 +3,7 @@
 #include "motor_control_messages.hpp"
 #include "LocalPolicy.hpp"
 #include "deploy_config.h"
+#include <cstring>
 
 // Forward declaration of the global onboard-model instance defined in main.cpp
 extern LocalPolicy onboard_model;
@@ -66,11 +67,10 @@ namespace Task {
             received_joint_offset = received_data.joint_offset;
             received_policy_hash = received_data.policy_hash;
             received_joint_id = received_data.joint_id;
-            memcpy(
-                received_command_context,
-                received_data.command_context,
-                sizeof(received_data.command_context)
-            );
+            memset(received_command_context, 0, sizeof(received_command_context));
+            for (size_t i = 0; i < Task::COMMAND_CONTEXT_DIM; ++i) {
+                received_command_context[i] = received_data.command_context[i];
+            }
 
             // Push new waypoint into the interpolator for smooth 100 Hz control
             cmd_interpolator.pushCommand(
@@ -193,12 +193,18 @@ namespace Task {
             feedback.policy_debug.joint_offset = policy_debug_joint_offset;
             feedback.policy_debug.dof_pos = policy_debug_dof_pos;
             feedback.policy_debug.dof_vel = policy_debug_dof_vel;
-            memcpy(
+            memset(
                 feedback.policy_debug.command_context,
-                policy_debug_command_context,
-                sizeof(policy_debug_command_context)
+                0,
+                sizeof(feedback.policy_debug.command_context)
             );
-            memcpy(feedback.policy_debug.local_obs, policy_debug_local_obs, sizeof(policy_debug_local_obs));
+            for (size_t i = 0; i < LOCAL_DEBUG_COMMAND_CONTEXT_DIM; ++i) {
+                feedback.policy_debug.command_context[i] = policy_debug_command_context[i];
+            }
+            memset(feedback.policy_debug.local_obs, 0, sizeof(feedback.policy_debug.local_obs));
+            for (size_t i = 0; i < LOCAL_DEBUG_OBS_DIM; ++i) {
+                feedback.policy_debug.local_obs[i] = policy_debug_local_obs[i];
+            }
             
             // Goal distance (set externally)
             feedback.goal_distance = goal_distance;
