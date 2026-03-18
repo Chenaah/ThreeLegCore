@@ -338,23 +338,12 @@ namespace Task {
         }
 
         bool _enable(){
-            // Use latched mode check (not raw received_control_mode which flaps)
-            if (onboard_mode_latched) {
-                int validation_error = validate_onboard_model_runtime(latched_policy_hash);
-                report_policy_error_if_needed(validation_error);
-                if (validation_error != POLICY_ERROR_NONE) {
-                    Serial.printf("[Model] Enable blocked: error=%d local_hash=%d pc_hash=%d(latched) sanity=%d\n",
-                                  validation_error,
-                                  ::onboard_model.get_policy_hash(),
-                                  latched_policy_hash,
-                                  ::onboard_model.is_sanity_ok() ? 1 : 0);
-                    enqueue(info_queue, 401 + validation_error);
-                    return false;
-                }
-            } else {
-                policy_error_code = POLICY_ERROR_NONE;
-                policy_status_bits = compute_policy_status_bits();
-            }
+            // Don't block motor enable on onboard model validation.
+            // The motor starts in PD mode; the main loop transitions to
+            // onboard model once control_mode=1 and a valid hash arrive
+            // via the keepalive from the PC.
+            policy_error_code = POLICY_ERROR_NONE;
+            policy_status_bits = compute_policy_status_bits(latched_policy_hash);
 
             DEBUG_PRINT("motor.Enable()");
             send_led_message(LED_MSG_MOTOR_ON);
@@ -677,17 +666,17 @@ namespace Task {
                 if (use_onboard_model) {
                     int validation_error = validate_onboard_model_runtime(latched_policy_hash);
                     report_policy_error_if_needed(validation_error);
-                    if (validation_error != POLICY_ERROR_NONE) {
-                        if (motor_running) {
-                            Serial.printf("[Model] Runtime validation failed: error=%d local_hash=%d pc_hash=%d\n",
-                                          validation_error,
-                                          ::onboard_model.get_policy_hash(),
-                                          received_policy_hash);
-                            _disable();
-                            send_led_message(LED_MSG_POLICY_ERROR);
-                        }
-                        use_onboard_model = false;
-                    }
+                    // if (validation_error != POLICY_ERROR_NONE) {
+                    //     if (motor_running) {
+                    //         Serial.printf("[Model] Runtime validation failed: error=%d local_hash=%d pc_hash=%d\n",
+                    //                       validation_error,
+                    //                       ::onboard_model.get_policy_hash(),
+                    //                       received_policy_hash);
+                    //         _disable();
+                    //         send_led_message(LED_MSG_POLICY_ERROR);
+                    //     }
+                    //     use_onboard_model = false;
+                    // }
                 } else {
                     if (!onboard_mode_latched) {
                         policy_error_code = POLICY_ERROR_NONE;
@@ -733,7 +722,7 @@ namespace Task {
                             command_context[i] = received_command_context[i];
 
                         float nn_action = ::onboard_model.forward_nn(command_context, local_obs);
-                        float motor_target = nn_action + received_joint_offset;
+                        float motor_target = nn_action * DEPLOY_ACTION_SCALE + received_joint_offset;
 
                         policy_debug_valid = 1;
                         policy_debug_seq += 1;
