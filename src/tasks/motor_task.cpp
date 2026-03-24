@@ -655,6 +655,11 @@ namespace Task {
                     (received_control_mode == CONTROL_MODE_ONBOARD_MODEL);
                 bool use_onboard_model =
                     requested_onboard_model && onboard_model_loaded;
+                const bool policy_tick = (substep == 0);
+
+                std::array<float, LOCAL_OBS_DIM> debug_local_obs{};
+                std::array<float, COMMAND_CONTEXT_DIM> debug_command_context{};
+                bool debug_obs_ready = false;
 
                 if (requested_onboard_model) {
                     int validation_error = validate_onboard_model_runtime();
@@ -675,63 +680,73 @@ namespace Task {
                         policy_error_code = POLICY_ERROR_NONE;
                     }
                     policy_status_bits = compute_policy_status_bits();
-                    policy_debug_valid = 0;
+                }
+
+                if (policy_tick) {
+                    float frame[LOCAL_FRAME_DIM];
+                    float command_context_input[COMMAND_CONTEXT_STORAGE_DIM] = {};
+
+                    float q[4] = {
+                        quat_imu[0],
+                        quat_imu[1],
+                        quat_imu[2],
+                        quat_imu[3],
+                    };
+                    float gyro[3] = {
+                        ang_vel_imu[0],
+                        ang_vel_imu[1],
+                        ang_vel_imu[2],
+                    };
+                    build_current_local_frame(
+                        q,
+                        gyro,
+                        filtered_dof_pos,
+                        filtered_dof_vel,
+                        frame
+                    );
+
+                    if (requested_onboard_model) {
+                        for (size_t i = 0; i < COMMAND_CONTEXT_STORAGE_DIM; ++i)
+                            command_context_input[i] = received_command_context[i];
+                    }
+
+                    push_local_obs_frame(frame);
+                    push_command_context(command_context_input);
+
+                    debug_local_obs = build_local_obs();
+                    debug_obs_ready = true;
+
+                    for (size_t i = 0; i < COMMAND_CONTEXT_DIM; ++i)
+                        debug_command_context[i] = command_context_input[i];
+
+                    policy_debug_valid = 1;
+                    policy_debug_seq += 1;
+                    policy_debug_nn_action = 0.0f;
+                    policy_debug_motor_target = target_pos;
+                    policy_debug_joint_offset = received_joint_offset;
+                    policy_debug_dof_pos = filtered_dof_pos;
+                    policy_debug_dof_vel = filtered_dof_vel;
+                    for (size_t i = 0; i < LOCAL_DEBUG_COMMAND_CONTEXT_DIM; ++i)
+                        policy_debug_command_context[i] = debug_command_context[i];
+                    for (size_t i = 0; i < LOCAL_DEBUG_OBS_DIM; ++i)
+                        policy_debug_local_obs[i] = debug_local_obs[i];
                 }
 
                 if (use_onboard_model) {
                     // --- Onboard-model mode ---
                     // Run the model every PD_SUBSTEPS ticks (100 Hz), interpolate at 500 Hz
-                    if (substep == 0) {
+                    if (policy_tick) {
                         if (motor_running) {
                             send_led_message(LED_MSG_POLICY_ACTIVE);
                         }
-
-                        // Model tick: build obs using filtered sensor data
-                        float frame[LOCAL_FRAME_DIM];
-
-                        // Use the latest IMU task outputs directly for the 100 Hz onboard model.
-                        float q[4] = {
-                            quat_imu[0],
-                            quat_imu[1],
-                            quat_imu[2],
-                            quat_imu[3],
-                        };
-                        float gyro[3] = {
-                            ang_vel_imu[0],
-                            ang_vel_imu[1],
-                            ang_vel_imu[2],
-                        };
-                        build_current_local_frame(
-                            q,
-                            gyro,
-                            filtered_dof_pos,
-                            filtered_dof_vel,
-                            frame
+                        float nn_action = ::onboard_model.forward_nn(
+                            debug_command_context,
+                            debug_local_obs
                         );
-
-                        push_local_obs_frame(frame);
-                        push_command_context(received_command_context);
-
-                        std::array<float, LOCAL_OBS_DIM> local_obs = build_local_obs();
-
-                        std::array<float, COMMAND_CONTEXT_DIM> command_context{};
-                        for (size_t i = 0; i < COMMAND_CONTEXT_DIM; ++i)
-                            command_context[i] = received_command_context[i];
-
-                        float nn_action = ::onboard_model.forward_nn(command_context, local_obs);
                         float motor_target = nn_action + received_joint_offset;
 
-                        policy_debug_valid = 1;
-                        policy_debug_seq += 1;
                         policy_debug_nn_action = nn_action;
                         policy_debug_motor_target = motor_target;
-                        policy_debug_joint_offset = received_joint_offset;
-                        policy_debug_dof_pos = filtered_dof_pos;
-                        policy_debug_dof_vel = filtered_dof_vel;
-                        for (size_t i = 0; i < LOCAL_DEBUG_COMMAND_CONTEXT_DIM; ++i)
-                            policy_debug_command_context[i] = command_context[i];
-                        for (size_t i = 0; i < LOCAL_DEBUG_OBS_DIM; ++i)
-                            policy_debug_local_obs[i] = local_obs[i];
 
                         // Shift targets for interpolation
                         prev_policy_target = curr_policy_target;
@@ -748,8 +763,6 @@ namespace Task {
                     interp_kp  = DEPLOY_KP;
                     interp_kd  = DEPLOY_KD;
 
-                    substep = (substep + 1) % PD_SUBSTEPS;
-
                 } else {
                     // --- Legacy PD mode: interpolate from PC-sent position target ---
                     if (cmd_interpolator.isTimedOut(COMMAND_TIMEOUT_MS)) {
@@ -760,7 +773,13 @@ namespace Task {
                     } else {
                         cmd_interpolator.sample(interp_pos, interp_vel, interp_kp, interp_kd);
                     }
+
+                    if (debug_obs_ready) {
+                        policy_debug_motor_target = interp_pos;
+                    }
                 }
+
+                substep = (substep + 1) % PD_SUBSTEPS;
 
                 // === 4. Apply Butterworth low-pass filter (optional) ===
                 float filtered_pos;

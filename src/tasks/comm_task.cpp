@@ -283,6 +283,11 @@ namespace Task {
             uint32_t last_feedback_ms = millis();
 
             while (true) {
+                if (OTATask::ota_in_progress) {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                    continue;
+                }
+
                 // Process incoming messages
                 node->spinOnce();
                 commandSub->spinOnce();

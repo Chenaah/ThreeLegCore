@@ -74,6 +74,7 @@ void setup() {
     xTaskCreatePinnedToCore(Task::MotorTask::run, "Motor_Task", 10000, nullptr, 3, &xHandle, 1);   // Highest priority for stable 100 Hz
     xTaskCreatePinnedToCore(Task::CommTask::run, "Comm_Task", 10000, nullptr, 2, &xHandle, 0);     // Medium priority for timely command delivery
     xTaskCreatePinnedToCore(Task::MonitorTask::run, "Monitor_Task", 10000, nullptr, 0, &xHandle, 0);
+    xTaskCreatePinnedToCore(Task::OTATask::run, "OTA_Task", 6000, nullptr, 3, &xHandle, 0);
 
     vTaskDelete(NULL);
 }
