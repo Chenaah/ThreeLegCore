@@ -71,7 +71,7 @@ void setup() {
     TaskHandle_t xHandle;
 
     xTaskCreatePinnedToCore(Task::IMUTask::run, "IMU_Task", 10000, nullptr, 1, &xHandle, 1);
-    xTaskCreatePinnedToCore(Task::MotorTask::run, "Motor_Task", 10000, nullptr, 3, &xHandle, 1);   // Highest priority for stable 100 Hz
+    xTaskCreatePinnedToCore(Task::MotorTask::run, "Motor_Task", 10000, nullptr, 3, &xHandle, 1);   // Highest priority for stable motor control
     xTaskCreatePinnedToCore(Task::CommTask::run, "Comm_Task", 10000, nullptr, 2, &xHandle, 0);     // Medium priority for timely command delivery
     xTaskCreatePinnedToCore(Task::MonitorTask::run, "Monitor_Task", 10000, nullptr, 0, &xHandle, 0);
     xTaskCreatePinnedToCore(Task::OTATask::run, "OTA_Task", 6000, nullptr, 3, &xHandle, 0);
@@ -104,7 +104,7 @@ void loop() {
 
     // std::array<float, LOCAL_OBS_DIM> obs = {};  // zeros = placeholder sensor data
 
-    // // forward_nn: raw NN output in [-0.8, 0.8], no offset
+    // // forward_nn: raw NN output in [DEPLOY_ACTION_LOW, DEPLOY_ACTION_HIGH], no offset
     // float nn_action = onboard_model.forward_nn(command_context, obs);
 
     // // select_action: NN output + default_dof_pos[module_idx] = motor target
@@ -116,7 +116,8 @@ void loop() {
     // } else {
     //     Serial.println("[Loop] Running model with hardcoded demo context...");
     // }
-    // Serial.printf("[Loop] NN action:     %.6f (in [-0.8, 0.8])\n", nn_action);
+    // Serial.printf("[Loop] NN action:     %.6f (in [%.3f, %.3f])\n",
+    //               nn_action, DEPLOY_ACTION_LOW, DEPLOY_ACTION_HIGH);
     // Serial.printf("[Loop] Motor target:  %.6f (NN + default_dof_pos[%d]=%.4f)\n",
     //               motor_target, onboard_model.get_module_index(),
     //               DEPLOY_DEFAULT_DOF_POS[onboard_model.get_module_index()]);

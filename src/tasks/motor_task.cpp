@@ -10,8 +10,43 @@ static constexpr size_t COMMAND_CONTEXT_HISTORY_BUFFER_STEPS =
 // Circular history rings: newest at [0], oldest at [N-1]
 static float local_frame_history[LOCAL_FRAME_HISTORY_STEPS][LOCAL_FRAME_DIM] = {};
 static float command_context_history[COMMAND_CONTEXT_HISTORY_BUFFER_STEPS][Task::COMMAND_CONTEXT_STORAGE_DIM] = {};
+static bool local_frame_history_initialized = false;
+static bool command_context_history_initialized = false;
+
+static float apply_local_obs_transform(float value, LocalObsTransform transform) {
+    switch (transform) {
+        case LocalObsTransform::None:
+            return value;
+        case LocalObsTransform::Cos:
+            return cosf(value);
+        case LocalObsTransform::Sin:
+            return sinf(value);
+    }
+    return value;
+}
+
+static void reset_local_obs_history() {
+    for (size_t h = 0; h < LOCAL_FRAME_HISTORY_STEPS; ++h) {
+        for (size_t d = 0; d < LOCAL_FRAME_DIM; ++d)
+            local_frame_history[h][d] = 0.0f;
+    }
+    for (size_t h = 0; h < COMMAND_CONTEXT_HISTORY_BUFFER_STEPS; ++h) {
+        for (size_t d = 0; d < Task::COMMAND_CONTEXT_STORAGE_DIM; ++d)
+            command_context_history[h][d] = 0.0f;
+    }
+    local_frame_history_initialized = false;
+    command_context_history_initialized = false;
+}
 
 static void push_local_obs_frame(const float frame[LOCAL_FRAME_DIM]) {
+    if (!local_frame_history_initialized) {
+        for (size_t h = 0; h < LOCAL_FRAME_HISTORY_STEPS; ++h) {
+            for (size_t d = 0; d < LOCAL_FRAME_DIM; ++d)
+                local_frame_history[h][d] = frame[d];
+        }
+        local_frame_history_initialized = true;
+        return;
+    }
     for (size_t h = LOCAL_FRAME_HISTORY_STEPS - 1; h > 0; --h) {
         for (size_t d = 0; d < LOCAL_FRAME_DIM; ++d)
             local_frame_history[h][d] = local_frame_history[h - 1][d];
@@ -22,6 +57,14 @@ static void push_local_obs_frame(const float frame[LOCAL_FRAME_DIM]) {
 
 static void push_command_context(const float command_context[Task::COMMAND_CONTEXT_STORAGE_DIM]) {
     if constexpr (Task::COMMAND_CONTEXT_HISTORY_STEPS > 0) {
+        if (!command_context_history_initialized) {
+            for (size_t h = 0; h < Task::COMMAND_CONTEXT_HISTORY_STEPS; ++h) {
+                for (size_t d = 0; d < Task::COMMAND_CONTEXT_DIM; ++d)
+                    command_context_history[h][d] = command_context[d];
+            }
+            command_context_history_initialized = true;
+            return;
+        }
         for (size_t h = Task::COMMAND_CONTEXT_HISTORY_STEPS - 1; h > 0; --h) {
             for (size_t d = 0; d < Task::COMMAND_CONTEXT_DIM; ++d)
                 command_context_history[h][d] = command_context_history[h - 1][d];
@@ -69,6 +112,7 @@ static void build_current_local_frame(
     const float gyro[3],
     float dof_pos,
     float dof_vel,
+    float last_action,
     float frame[LOCAL_FRAME_DIM]
 ) {
     float pg[3] = {};
@@ -92,10 +136,22 @@ static void build_current_local_frame(
                 frame[idx++] = gyro[2];
                 break;
             case LocalObsField::DofPos:
-                frame[idx++] = dof_pos;
+                frame[idx++] = apply_local_obs_transform(
+                    dof_pos,
+                    LOCAL_FRAME_TRANSFORMS[component_idx]
+                );
                 break;
             case LocalObsField::DofVel:
-                frame[idx++] = dof_vel;
+                frame[idx++] = apply_local_obs_transform(
+                    dof_vel,
+                    LOCAL_FRAME_TRANSFORMS[component_idx]
+                );
+                break;
+            case LocalObsField::LastAction:
+                frame[idx++] = apply_local_obs_transform(
+                    last_action,
+                    LOCAL_FRAME_TRANSFORMS[component_idx]
+                );
                 break;
         }
     }
@@ -351,6 +407,7 @@ namespace Task {
             filter.reset();            // Clear filter state to avoid transient
             pos_filter.reset();
             vel_filter.reset();
+            reset_local_obs_history();
             st = motor.Enable();
             motor_running = true;
             epi_start_time = millis();
@@ -617,7 +674,7 @@ namespace Task {
             
             _enable();
             
-            // PD loop runs at 500 Hz, policy inference at 100 Hz (every PD_SUBSTEPS ticks)
+            // PD loop runs at 500 Hz. Policy inference rate comes from deploy_config.h.
             TickType_t lastWakeTime = xTaskGetTickCount();
             const TickType_t dt = pdMS_TO_TICKS(CONTROL_LOOP_DT_MS);  // 2 ms
 
@@ -636,6 +693,7 @@ namespace Task {
             float prev_policy_target = 0.0f;  // target from previous policy tick
             float curr_policy_target = 0.0f;  // target from current policy tick
             int substep = 0;                   // counts 0..PD_SUBSTEPS-1
+            float last_onboard_action = 0.0f; // previous raw policy action, used in next observation
 
             while (true) {
                 unsigned long t_start = micros();
@@ -678,6 +736,7 @@ namespace Task {
                 } else {
                     if (received_control_mode != CONTROL_MODE_ONBOARD_MODEL) {
                         policy_error_code = POLICY_ERROR_NONE;
+                        last_onboard_action = 0.0f;
                     }
                     policy_status_bits = compute_policy_status_bits();
                 }
@@ -702,6 +761,7 @@ namespace Task {
                         gyro,
                         filtered_dof_pos,
                         filtered_dof_vel,
+                        last_onboard_action,
                         frame
                     );
 
@@ -734,7 +794,7 @@ namespace Task {
 
                 if (use_onboard_model) {
                     // --- Onboard-model mode ---
-                    // Run the model every PD_SUBSTEPS ticks (100 Hz), interpolate at 500 Hz
+                    // Run the model every PD_SUBSTEPS ticks, interpolate at 500 Hz
                     if (policy_tick) {
                         if (motor_running) {
                             send_led_message(LED_MSG_POLICY_ACTIVE);
@@ -747,6 +807,7 @@ namespace Task {
 
                         policy_debug_nn_action = nn_action;
                         policy_debug_motor_target = motor_target;
+                        last_onboard_action = nn_action;
 
                         // Shift targets for interpolation
                         prev_policy_target = curr_policy_target;

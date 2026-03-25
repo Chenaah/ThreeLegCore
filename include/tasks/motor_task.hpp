@@ -4,14 +4,15 @@
 #include <queue>
 #include "Arduino.h"
 #include <MotorCtrl.hpp>
+#include "deploy_config.h"
 #include "local_obs_config.h"
 
 #define MOTOR_ID 1
 
 // Control loop timing
-#define POLICY_LOOP_HZ      100    // Policy inference frequency (Hz)
+#define POLICY_LOOP_HZ      DEPLOY_POLICY_LOOP_HZ
 #define PD_LOOP_HZ           500    // PD controller / motor command frequency (Hz)
-#define PD_SUBSTEPS         (PD_LOOP_HZ / POLICY_LOOP_HZ)  // 5 substeps per policy tick
+#define PD_SUBSTEPS         (PD_LOOP_HZ / POLICY_LOOP_HZ)  // PD ticks per policy update
 
 // Legacy aliases (used by filter, torque rate limiter, etc.)
 #define CONTROL_LOOP_HZ     PD_LOOP_HZ
