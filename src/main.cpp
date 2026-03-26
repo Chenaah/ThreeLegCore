@@ -44,6 +44,20 @@ void setup() {
     // in every MotorCommand, so the ESP32 does not depend on hardcoded mapping.
     onboard_model.set_module_index(0);
 
+    if (DEPLOY_USE_XBOX_CONTROLLER) {
+        Serial.println("[Setup] Control source: Xbox controller");
+        Task::MotorTask::init_xbox_controller();
+    } else {
+        Serial.println("[Setup] Control source: PC");
+    }
+
+    if (DEPLOY_USE_XBOX_CONTROLLER) {
+        Task::received_control_mode = Task::CONTROL_MODE_ONBOARD_MODEL;
+        Task::received_joint_offset = DEPLOY_DEFAULT_DOF_POS[0];
+        Task::received_policy_hash = DEPLOY_POLICY_HASH;
+        Task::received_joint_id = 0;
+    }
+
     if (onboard_model.load_from_littlefs()) {
         // Run sanity check with reference values generated alongside the deploy headers.
         bool sanity_ok = onboard_model.run_sanity_check(
@@ -56,7 +70,11 @@ void setup() {
             send_led_message(LED_MSG_POLICY_ERROR);
             Serial.println("[Setup] Onboard-model hash mismatch against build header.");
         } else if (sanity_ok) {
-            Serial.println("[Setup] Onboard model loaded: waiting for PC control_mode to activate NN.");
+            if (DEPLOY_USE_XBOX_CONTROLLER) {
+                Serial.println("[Setup] Onboard model loaded: waiting for Xbox A button to enable.");
+            } else {
+                Serial.println("[Setup] Onboard model loaded: waiting for PC control_mode to activate NN.");
+            }
         } else {
             Task::policy_error_code = Task::POLICY_ERROR_SANITY_FAILED;
             send_led_message(LED_MSG_POLICY_ERROR);

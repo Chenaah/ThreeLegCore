@@ -166,7 +166,9 @@ struct CommandInterpolator {
 namespace Task {
     constexpr size_t COMMAND_CONTEXT_DIM = LOCAL_LATENT_DIM;
     constexpr size_t COMMAND_CONTEXT_STORAGE_DIM =
-        (COMMAND_CONTEXT_DIM > 0) ? COMMAND_CONTEXT_DIM : 1;
+        (LOCAL_TRANSPORT_COMMAND_CONTEXT_DIM > 0)
+            ? LOCAL_TRANSPORT_COMMAND_CONTEXT_DIM
+            : 1;
     constexpr size_t COMMAND_CONTEXT_HISTORY_STEPS = LOCAL_LATENT_HISTORY_STEPS;
     constexpr size_t POLICY_DEBUG_COMMAND_CONTEXT_STORAGE_DIM =
         (LOCAL_DEBUG_COMMAND_CONTEXT_DIM > 0) ? LOCAL_DEBUG_COMMAND_CONTEXT_DIM : 1;
@@ -174,7 +176,17 @@ namespace Task {
     enum ControlMode : int32_t {
         CONTROL_MODE_DIRECT_PD = 0,
         CONTROL_MODE_ONBOARD_MODEL = 1,
+        CONTROL_MODE_LOCAL_DEBUG_SCENARIO = 2,
     };
+
+    constexpr float LOCAL_DEBUG_PROTOCOL_VERSION = 1.0f;
+    constexpr size_t LOCAL_DEBUG_SCENARIO_CONTEXT_DIM = 8;
+    constexpr size_t LOCAL_DEBUG_CTX_VERSION = 0;
+    constexpr size_t LOCAL_DEBUG_CTX_SCENARIO_ID = 1;
+    constexpr size_t LOCAL_DEBUG_CTX_AMPLITUDE = 2;
+    constexpr size_t LOCAL_DEBUG_CTX_FREQUENCY_HZ = 3;
+    constexpr size_t LOCAL_DEBUG_CTX_PHASE_OFFSET_RAD = 4;
+    constexpr size_t LOCAL_DEBUG_CTX_BIAS = 5;
 
     enum PolicyStatusBits : int32_t {
         POLICY_STATUS_LOADED = 1 << 0,
@@ -239,6 +251,7 @@ namespace Task {
     extern const float DELTA_T;
 
     namespace MotorTask {
+        void init_xbox_controller();
         void run(void *pvParameters);
     }
 }

@@ -1,5 +1,6 @@
 #include "tasks.hpp"
 #include "LocalPolicy.hpp"
+#include <XboxSeriesXControllerESP32_asukiaaa.hpp>
 
 // Forward declaration of the global onboard-model instance defined in main.cpp
 extern LocalPolicy onboard_model;
@@ -157,6 +158,98 @@ static void build_current_local_frame(
     }
 }
 
+static uint64_t local_debug_scenario_start_us = 0;
+static int local_debug_last_mode = -1;
+static float local_debug_last_signature[6] = {};
+static bool local_debug_signature_valid = false;
+
+static bool local_debug_protocol_valid(
+    const float command_context[Task::COMMAND_CONTEXT_STORAGE_DIM]
+) {
+    if constexpr (Task::COMMAND_CONTEXT_STORAGE_DIM <= Task::LOCAL_DEBUG_CTX_BIAS) {
+        return false;
+    }
+    return fabsf(
+        command_context[Task::LOCAL_DEBUG_CTX_VERSION] - Task::LOCAL_DEBUG_PROTOCOL_VERSION
+    ) < 1e-3f;
+}
+
+static void maybe_reset_local_debug_clock(
+    int control_mode,
+    const float command_context[Task::COMMAND_CONTEXT_STORAGE_DIM]
+) {
+    if (control_mode != Task::CONTROL_MODE_LOCAL_DEBUG_SCENARIO) {
+        local_debug_last_mode = control_mode;
+        local_debug_signature_valid = false;
+        return;
+    }
+
+    float signature[6] = {
+        command_context[Task::LOCAL_DEBUG_CTX_VERSION],
+        command_context[Task::LOCAL_DEBUG_CTX_SCENARIO_ID],
+        command_context[Task::LOCAL_DEBUG_CTX_AMPLITUDE],
+        command_context[Task::LOCAL_DEBUG_CTX_FREQUENCY_HZ],
+        command_context[Task::LOCAL_DEBUG_CTX_PHASE_OFFSET_RAD],
+        command_context[Task::LOCAL_DEBUG_CTX_BIAS],
+    };
+
+    bool changed = (local_debug_last_mode != control_mode) || !local_debug_signature_valid;
+    if (!changed) {
+        for (size_t i = 0; i < 6; ++i) {
+            if (fabsf(signature[i] - local_debug_last_signature[i]) > 1e-6f) {
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if (changed) {
+        local_debug_scenario_start_us = esp_timer_get_time();
+        for (size_t i = 0; i < 6; ++i)
+            local_debug_last_signature[i] = signature[i];
+        local_debug_signature_valid = true;
+    }
+    local_debug_last_mode = control_mode;
+}
+
+static float compute_local_debug_action(
+    const float command_context[Task::COMMAND_CONTEXT_STORAGE_DIM],
+    int joint_id
+) {
+    if (!local_debug_protocol_valid(command_context))
+        return 0.0f;
+
+    int scenario_id = (int)lroundf(command_context[Task::LOCAL_DEBUG_CTX_SCENARIO_ID]);
+    float amplitude = command_context[Task::LOCAL_DEBUG_CTX_AMPLITUDE];
+    float frequency_hz = command_context[Task::LOCAL_DEBUG_CTX_FREQUENCY_HZ];
+    float phase_offset_rad = command_context[Task::LOCAL_DEBUG_CTX_PHASE_OFFSET_RAD];
+    float bias = command_context[Task::LOCAL_DEBUG_CTX_BIAS];
+    float elapsed_sec = 0.0f;
+    if (local_debug_scenario_start_us != 0) {
+        elapsed_sec = (float)(esp_timer_get_time() - local_debug_scenario_start_us) * 1e-6f;
+    }
+
+    switch (scenario_id) {
+        case 1:
+            if (joint_id <= 0)
+                return 0.0f;
+            return bias + amplitude * sinf(
+                6.28318530718f * frequency_hz * elapsed_sec +
+                (float)(joint_id - 1) * phase_offset_rad
+            );
+        case 2: {
+            float phase = 6.28318530718f * frequency_hz * elapsed_sec + phase_offset_rad;
+            if (joint_id == 1)
+                return bias + amplitude * sinf(phase);
+            if (joint_id == 2)
+                return bias - amplitude * sinf(phase);
+            return 0.0f;
+        }
+        default:
+            return 0.0f;
+    }
+}
+
 namespace Task {
 
 
@@ -177,10 +270,11 @@ namespace Task {
     float command_kp = 0;
     float command_kd = 0;
     int enable_filter = 1;
-    int received_control_mode = CONTROL_MODE_DIRECT_PD;
-    float received_joint_offset = 0.0f;
-    int received_policy_hash = 0;
-    int received_joint_id = -1;             // Action/joint index from last command (-1 = all)
+    int received_control_mode =
+        DEPLOY_USE_XBOX_CONTROLLER ? CONTROL_MODE_ONBOARD_MODEL : CONTROL_MODE_DIRECT_PD;
+    float received_joint_offset = DEPLOY_DEFAULT_DOF_POS[0];
+    int received_policy_hash = DEPLOY_USE_XBOX_CONTROLLER ? DEPLOY_POLICY_HASH : 0;
+    int received_joint_id = DEPLOY_USE_XBOX_CONTROLLER ? 0 : -1; // Action/joint index from last command (-1 = all)
     float received_command_context[COMMAND_CONTEXT_STORAGE_DIM] = {};  // Updated by the PC command stream
     bool onboard_model_loaded = false;      // Set to true in setup() if model loads successfully
     int policy_status_bits = 0;
@@ -258,10 +352,103 @@ namespace Task {
         ButterworthFilter vel_filter(30, PD_LOOP_HZ);  // 30 Hz cutoff for measured dof_vel
         float filtered_dof_pos = 0.0f;  // filtered motor position (updated at PD rate)
         float filtered_dof_vel = 0.0f;  // filtered motor velocity (updated at PD rate)
+        XboxSeriesXControllerESP32_asukiaaa::Core xbox_controller;
+        bool xbox_started = false;
+        bool xbox_ready = false;
+        bool joystick_policy_enabled = !DEPLOY_USE_XBOX_CONTROLLER;
+        bool xbox_btn_a_prev = false;
+        bool xbox_btn_b_prev = false;
+        bool xbox_btn_x_prev = false;
+        bool xbox_btn_y_prev = false;
         int motor_running = false;
         unsigned long epi_start_time;
         Motor_fault_state last_fault;  // Store last received fault
         bool fault_received = false;   // Flag to indicate if a fault was received
+
+        void _reset_xbox_button_edges() {
+            xbox_btn_a_prev = false;
+            xbox_btn_b_prev = false;
+            xbox_btn_x_prev = false;
+            xbox_btn_y_prev = false;
+        }
+
+        void _begin_xbox_controller_if_needed() {
+            if constexpr (!DEPLOY_USE_XBOX_CONTROLLER) {
+                return;
+            }
+            if (xbox_started) {
+                return;
+            }
+            xbox_controller.begin();
+            xbox_started = true;
+            Serial.println("[Xbox] Waiting for controller connection...");
+        }
+
+        void _poll_xbox_controller() {
+            if constexpr (!DEPLOY_USE_XBOX_CONTROLLER) {
+                return;
+            }
+
+            _begin_xbox_controller_if_needed();
+            xbox_controller.onLoop();
+
+            const bool connected =
+                xbox_controller.isConnected() &&
+                !xbox_controller.isWaitingForFirstNotification();
+
+            if (!connected) {
+                if (xbox_ready) {
+                    Serial.println("[Xbox] Controller disconnected. Disabling motor.");
+                    remote_switch = 0;
+                    joystick_policy_enabled = false;
+                }
+                xbox_ready = false;
+                _reset_xbox_button_edges();
+                return;
+            }
+
+            if (!xbox_ready) {
+                xbox_ready = true;
+                Serial.println("[Xbox] Controller connected. Press A to enable.");
+            }
+
+            const bool btn_a = xbox_controller.xboxNotif.btnA;
+            const bool btn_b = xbox_controller.xboxNotif.btnB;
+            const bool btn_x = xbox_controller.xboxNotif.btnX;
+            const bool btn_y = xbox_controller.xboxNotif.btnY;
+
+            if (btn_a && !xbox_btn_a_prev) {
+                remote_switch = 1;
+                joystick_policy_enabled = true;
+                received_control_mode = CONTROL_MODE_ONBOARD_MODEL;
+                received_joint_offset = DEPLOY_DEFAULT_DOF_POS[0];
+                received_policy_hash = DEPLOY_POLICY_HASH;
+                received_joint_id = 0;
+                Serial.println("[Xbox] A pressed: onboard policy enabled.");
+            }
+
+            if (btn_b && !xbox_btn_b_prev) {
+                joystick_policy_enabled = false;
+                Serial.println("[Xbox] B pressed: policy soft-stopped.");
+            }
+
+            if (btn_x && !xbox_btn_x_prev) {
+                remote_switch = 0;
+                joystick_policy_enabled = false;
+                Serial.println("[Xbox] X pressed: motor disabled.");
+            }
+
+            if (btn_y && !xbox_btn_y_prev) {
+                remote_switch = 0;
+                joystick_policy_enabled = false;
+                Serial.println("[Xbox] Y pressed: motor disabled.");
+            }
+
+            xbox_btn_a_prev = btn_a;
+            xbox_btn_b_prev = btn_b;
+            xbox_btn_x_prev = btn_x;
+            xbox_btn_y_prev = btn_y;
+        }
 
         /**
          * @brief Convert fault state to a 32-bit integer for transmission
@@ -448,6 +635,7 @@ namespace Task {
 
         void _wait_for_switch_off() {
             while (remote_switch != 0) {
+                _poll_xbox_controller();
                 vTaskDelay(pdMS_TO_TICKS(100));
                 enqueue(info_queue, 303);
                 st = motor.Get_state();
@@ -457,6 +645,7 @@ namespace Task {
 
         void _wait_for_switch_on() {
             while (remote_switch == 0) {
+                _poll_xbox_controller();
                 // esp_task_wdt_reset();
                 vTaskDelay(pdMS_TO_TICKS(100));
                 enqueue(info_queue, 304);
@@ -661,6 +850,10 @@ namespace Task {
 
         }
 
+        void init_xbox_controller() {
+            _begin_xbox_controller_if_needed();
+        }
+
         void run(void *pvParameters) {
             delay(2000); // Wait for the motor switch
             _init_motor();
@@ -699,6 +892,7 @@ namespace Task {
                 unsigned long t_start = micros();
 
                 // === 1. Check remote switch & commands (lightweight) ===
+                _poll_xbox_controller();
                 _check_remote_switch();
                 _check_commands();
 
@@ -711,8 +905,11 @@ namespace Task {
 
                 bool requested_onboard_model =
                     (received_control_mode == CONTROL_MODE_ONBOARD_MODEL);
+                bool requested_local_debug =
+                    (received_control_mode == CONTROL_MODE_LOCAL_DEBUG_SCENARIO);
                 bool use_onboard_model =
                     requested_onboard_model && onboard_model_loaded;
+                bool use_local_debug = requested_local_debug;
                 const bool policy_tick = (substep == 0);
 
                 std::array<float, LOCAL_OBS_DIM> debug_local_obs{};
@@ -739,6 +936,23 @@ namespace Task {
                         last_onboard_action = 0.0f;
                     }
                     policy_status_bits = compute_policy_status_bits();
+                }
+
+                if (requested_local_debug) {
+                    maybe_reset_local_debug_clock(
+                        received_control_mode,
+                        received_command_context
+                    );
+                    if (!local_debug_protocol_valid(received_command_context)) {
+                        use_local_debug = false;
+                    }
+                    policy_error_code = POLICY_ERROR_NONE;
+                    policy_status_bits = 0;
+                } else if (received_control_mode != CONTROL_MODE_LOCAL_DEBUG_SCENARIO) {
+                    maybe_reset_local_debug_clock(
+                        received_control_mode,
+                        received_command_context
+                    );
                 }
 
                 if (policy_tick) {
@@ -792,17 +1006,29 @@ namespace Task {
                         policy_debug_local_obs[i] = debug_local_obs[i];
                 }
 
-                if (use_onboard_model) {
-                    // --- Onboard-model mode ---
+                if (use_onboard_model || use_local_debug) {
+                    // --- Firmware-generated local action mode ---
                     // Run the model every PD_SUBSTEPS ticks, interpolate at 500 Hz
                     if (policy_tick) {
-                        if (motor_running) {
+                        if (motor_running && joystick_policy_enabled) {
                             send_led_message(LED_MSG_POLICY_ACTIVE);
                         }
-                        float nn_action = ::onboard_model.forward_nn(
-                            debug_command_context,
-                            debug_local_obs
-                        );
+                        float nn_action = 0.0f;
+                        if (use_onboard_model && joystick_policy_enabled) {
+                            nn_action = ::onboard_model.forward_nn(
+                                debug_command_context,
+                                debug_local_obs
+                            );
+                        } else if (use_local_debug) {
+                            int joint_id = received_joint_id;
+                            if (joint_id < 0) {
+                                joint_id = ::onboard_model.get_module_index();
+                            }
+                            nn_action = compute_local_debug_action(
+                                received_command_context,
+                                joint_id
+                            );
+                        }
                         float motor_target = nn_action + received_joint_offset;
 
                         policy_debug_nn_action = nn_action;

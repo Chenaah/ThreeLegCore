@@ -67,8 +67,11 @@ namespace Task {
             received_joint_offset = received_data.joint_offset;
             received_policy_hash = received_data.policy_hash;
             received_joint_id = received_data.joint_id;
+            if (received_joint_id >= 0 && received_joint_id < DEPLOY_NUM_MODULES) {
+                ::onboard_model.set_module_index(received_joint_id);
+            }
             memset(received_command_context, 0, sizeof(received_command_context));
-            for (size_t i = 0; i < Task::COMMAND_CONTEXT_DIM; ++i) {
+            for (size_t i = 0; i < Task::COMMAND_CONTEXT_STORAGE_DIM; ++i) {
                 received_command_context[i] = received_data.command_context[i];
             }
 
@@ -125,18 +128,23 @@ namespace Task {
                 SERVER_PORT
             );
 
-            // Create subscriber - listens for commands on a DIFFERENT port
-            // Note: Must use a different port than SERVER_PORT for receiving
-            const uint16_t COMMAND_PORT = 6667;
-            commandSub = node->createSubscription<CapyMotorCommand>(
-                "/motor_cmd",
-                _on_command_received,
-                COMMAND_PORT
-            );
+            if constexpr (!DEPLOY_USE_XBOX_CONTROLLER) {
+                // Create subscriber - listens for commands on a DIFFERENT port
+                // Note: Must use a different port than SERVER_PORT for receiving
+                const uint16_t COMMAND_PORT = 6667;
+                commandSub = node->createSubscription<CapyMotorCommand>(
+                    "/motor_cmd",
+                    _on_command_received,
+                    COMMAND_PORT
+                );
+                Serial.println("[Node] Pub/Sub ready!");
+                Serial.printf("[Node] Listening for commands on port %d\n", COMMAND_PORT);
+            } else {
+                commandSub = nullptr;
+                Serial.println("[Node] Feedback-only pub/sub ready (Xbox control mode).");
+            }
 
-            Serial.println("[Node] Pub/Sub ready!");
             Serial.printf("[Node] Sending feedback to %s:%d\n", SERVER_IP, SERVER_PORT);
-            Serial.printf("[Node] Listening for commands on port %d\n", COMMAND_PORT);
         }
 
         void _send_data() {
@@ -273,6 +281,14 @@ namespace Task {
         
         void run(void *pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(100));
+
+            if constexpr (DEPLOY_USE_XBOX_CONTROLLER) {
+                connected = false;
+                Serial.println("[Comm] Xbox deploy mode: WiFi/pubsub disabled.");
+                while (true) {
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                }
+            }
             
             // Connect to WiFi
             _connect_to_wifi();
@@ -290,7 +306,9 @@ namespace Task {
 
                 // Process incoming messages
                 node->spinOnce();
-                commandSub->spinOnce();
+                if (commandSub != nullptr) {
+                    commandSub->spinOnce();
+                }
 
                 // Delay here to help the motor perform the latest commands
                 vTaskDelay(pdMS_TO_TICKS(DELAY_PERIOD));
