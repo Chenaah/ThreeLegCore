@@ -11,6 +11,40 @@
 #define DEBUG_PRINT(c) 0
 #endif
 
+namespace
+{
+constexpr float kPi = 3.14159265358979323846F;
+
+float uint_to_float(const uint16_t x, const float x_min, const float x_max)
+{
+    return (float(x) / 65536.0F) * (x_max - x_min) + x_min;
+}
+
+Motor_profile get_builtin_profile(const Motor_type type)
+{
+    switch (type)
+    {
+    case Motor_type::RS03:
+        return Motor_profile{
+            -60.0F, 60.0F,
+            -4.0F * kPi, 4.0F * kPi,
+            -20.0F, 20.0F,
+            0.0F, 5000.0F,
+            0.0F, 100.0F,
+            10.0F};
+    case Motor_type::Cybergear:
+    default:
+        return Motor_profile{
+            -12.0F, 12.0F,
+            -4.0F * kPi, 4.0F * kPi,
+            -30.0F, 30.0F,
+            0.0F, 500.0F,
+            0.0F, 5.0F,
+            10.0F};
+    }
+}
+} // namespace
+
 
 uint16_t float_to_uint(const float x, const float x_min, const float x_max, const int bits)
 {
@@ -219,10 +253,23 @@ void Motor::Uninit()
 }
 
 Motor::Motor()
+    : motor_type(Motor_type::Cybergear), motor_profile(get_builtin_profile(Motor_type::Cybergear))
+{
+}
+
+Motor::Motor(Motor_type type)
+    : motor_type(type), motor_profile(get_builtin_profile(type))
 {
 }
 
 Motor::Motor(uint8_t Target_ID)
+    : motor_type(Motor_type::Cybergear), motor_profile(get_builtin_profile(Motor_type::Cybergear))
+{
+    Init(Target_ID);
+}
+
+Motor::Motor(uint8_t Target_ID, Motor_type type)
+    : motor_type(type), motor_profile(get_builtin_profile(type))
 {
     Init(Target_ID);
 }
@@ -230,6 +277,27 @@ Motor::Motor(uint8_t Target_ID)
 Motor::~Motor()
 {
     Uninit();
+}
+
+void Motor::Set_motor_type(const Motor_type type)
+{
+    motor_type = type;
+    motor_profile = get_builtin_profile(type);
+}
+
+void Motor::Set_motor_profile(const Motor_profile& profile)
+{
+    motor_profile = profile;
+}
+
+Motor_type Motor::Get_motor_type() const
+{
+    return motor_type;
+}
+
+const Motor_profile& Motor::Get_motor_profile() const
+{
+    return motor_profile;
 }
 
 Motor_state Motor::Unpack(const twai_message_t msg)
@@ -240,10 +308,10 @@ Motor_state Motor::Unpack(const twai_message_t msg)
     temp.error_state = (msg.identifier >> 16) & 0xFF; // cmd_data[1]
     temp.mode = (msg.identifier >> 22) & 0x03;
 
-    temp.angle = (float((uint16_t(msg.data[0]) << 8) + msg.data[1]) / 65536.0F - 0.5F) * 8.0F * M_PI;
-    temp.angle_v = (float((uint16_t(msg.data[2]) << 8) + msg.data[3]) / 65536.0F - 0.5F) * 60.0F;
-    temp.torque = (float((uint16_t(msg.data[4]) << 8) + msg.data[5]) / 65536.0F - 0.5F) * 24.0F;
-    temp.temperature = float((uint16_t(msg.data[6]) << 8) + msg.data[7]) / 10.0F;
+    temp.angle = uint_to_float((uint16_t(msg.data[0]) << 8) + msg.data[1], motor_profile.angle_min, motor_profile.angle_max);
+    temp.angle_v = uint_to_float((uint16_t(msg.data[2]) << 8) + msg.data[3], motor_profile.vel_min, motor_profile.vel_max);
+    temp.torque = uint_to_float((uint16_t(msg.data[4]) << 8) + msg.data[5], motor_profile.torque_min, motor_profile.torque_max);
+    temp.temperature = float((uint16_t(msg.data[6]) << 8) + msg.data[7]) / motor_profile.temperature_scale;
 
     return temp;
 }
@@ -388,11 +456,11 @@ Motor_state Motor::Set_control_int(const uint16_t target_torque, const uint16_t 
 Motor_state Motor::Set_control(const float target_torque, const float target_angle, const float target_vel, const float Kp, const float Kd)
 {
     return Set_control_int(
-        float_to_uint(target_torque, -12.0F, 12.0F, 16),
-        float_to_uint(target_angle, -4.0F * M_PI, 4.0F * M_PI, 16),
-        float_to_uint(target_vel, -30.0F, 30.0F, 16),
-        float_to_uint(Kp, 0.0F, 500.0F, 16),
-        float_to_uint(Kd, 0.0F, 5.0F, 16));
+        float_to_uint(target_torque, motor_profile.torque_min, motor_profile.torque_max, 16),
+        float_to_uint(target_angle, motor_profile.angle_min, motor_profile.angle_max, 16),
+        float_to_uint(target_vel, motor_profile.vel_min, motor_profile.vel_max, 16),
+        float_to_uint(Kp, motor_profile.kp_min, motor_profile.kp_max, 16),
+        float_to_uint(Kd, motor_profile.kd_min, motor_profile.kd_max, 16));
 }
 
 float Motor::Read_parameter(const Motor_param index)

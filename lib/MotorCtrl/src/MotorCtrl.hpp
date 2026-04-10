@@ -76,6 +76,27 @@ struct Motor_fault_state
     bool temp_warning;            // bit0: Motor over-temperature warning (default 75°C)
 };
 
+enum class Motor_type : uint8_t
+{
+    Cybergear = 0,
+    RS03
+};
+
+struct Motor_profile
+{
+    float torque_min;
+    float torque_max;
+    float angle_min;
+    float angle_max;
+    float vel_min;
+    float vel_max;
+    float kp_min;
+    float kp_max;
+    float kd_min;
+    float kd_max;
+    float temperature_scale;
+};
+
 /**
  * @brief motor parameter enumeration
  *
@@ -131,11 +152,26 @@ public:
     Motor();
 
     /**
+     * @brief Construct a new Motor object with a built-in motor profile
+     *
+     * @param type motor type/profile
+     */
+    Motor(Motor_type type);
+
+    /**
      * @brief Construct a new Motor object and init with ID
      *
      * @param Target_ID CAN_ID of motor
      */
     Motor(const uint8_t Target_ID);
+
+    /**
+     * @brief Construct a new Motor object with ID and profile
+     *
+     * @param Target_ID CAN_ID of motor
+     * @param type motor type/profile
+     */
+    Motor(const uint8_t Target_ID, Motor_type type);
 
     /**
      * @brief Destroy the Motor object and also uninit the CAN bus if needed
@@ -152,6 +188,34 @@ public:
      */
     uint64_t Init(const uint8_t Target_ID);
     uint64_t Init(const uint8_t Target_ID, gpio_num_t can_tx_pin, gpio_num_t can_rx_pin);
+
+    /**
+     * @brief Select one of the built-in motor profiles
+     *
+     * @param type motor type/profile
+     */
+    void Set_motor_type(Motor_type type);
+
+    /**
+     * @brief Override the active motor profile with custom limits/scales
+     *
+     * @param profile custom motor profile
+     */
+    void Set_motor_profile(const Motor_profile& profile);
+
+    /**
+     * @brief Get the currently active motor type
+     *
+     * @return Motor_type active type
+     */
+    Motor_type Get_motor_type() const;
+
+    /**
+     * @brief Get the currently active motor profile
+     *
+     * @return const Motor_profile& active profile
+     */
+    const Motor_profile& Get_motor_profile() const;
 
     /**
      * @brief uninitialize motor and CAN
@@ -335,6 +399,10 @@ private:
 
     // current motor mode
     Motor_mode curr_mode = Motor_mode::Motion;
+
+    // current motor profile used for command packing/unpacking
+    Motor_type motor_type = Motor_type::Cybergear;
+    Motor_profile motor_profile = {};
 
     /**
      * @brief unpack the returned data to Motor_state class

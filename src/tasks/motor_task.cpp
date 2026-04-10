@@ -295,7 +295,7 @@ namespace Task {
     CommandInterpolator cmd_interpolator;
 
     // Config
-    float offset = -1.0471975512; // 1.65806; // motor offset, shared for correcting sent observation
+    float offset = kMotorFrameOffset; // motor offset, shared for correcting sent observation
     const float DELTA_T = CONTROL_LOOP_DT_MS; // Control loop period in ms
 
     static int compute_policy_status_bits() {
@@ -346,7 +346,7 @@ namespace Task {
 
     namespace MotorTask {
 
-        Motor motor;
+        Motor motor(kMotorType);
         ButterworthFilter filter(15, PD_LOOP_HZ);      // 15 Hz cutoff for target position
         ButterworthFilter pos_filter(30, PD_LOOP_HZ);  // 30 Hz cutoff for measured dof_pos
         ButterworthFilter vel_filter(30, PD_LOOP_HZ);  // 30 Hz cutoff for measured dof_vel
@@ -597,6 +597,7 @@ namespace Task {
             reset_local_obs_history();
             st = motor.Enable();
             motor_running = true;
+            switch_off_request = 0;
             epi_start_time = millis();
             return true;
         }
@@ -628,7 +629,7 @@ namespace Task {
         }
 
         void _step(float target_angle, float target_vel, float kp = 20, float kd = 0.5) {
-            if (_safe())
+            if (motor_running && _safe())
                 st = motor.Set_control(0, target_angle + offset, target_vel, kp, kd);
            
         }
@@ -639,6 +640,7 @@ namespace Task {
                 vTaskDelay(pdMS_TO_TICKS(100));
                 enqueue(info_queue, 303);
                 st = motor.Get_state();
+                Serial.println("[MotorTask] Waiting for switch OFF...");
                 send_led_message(LED_MSG_UNSAFE);
             }
         }
@@ -650,6 +652,7 @@ namespace Task {
                 vTaskDelay(pdMS_TO_TICKS(100));
                 enqueue(info_queue, 304);
                 st = motor.Get_state();
+                Serial.println("[MotorTask] Waiting for switch ON...");
                 send_led_message(LED_MSG_WAIT_CALI);
 
             }
@@ -661,12 +664,17 @@ namespace Task {
                 // esp_task_wdt_reset();
                 vTaskDelay(pdMS_TO_TICKS(100));
                 st = motor.Get_state();
+                Serial.println("[MotorTask] Waiting for help...");
                 send_led_message(LED_MSG_WAIT_HELP);
 
             }
         }
 
         void _check_safety() {
+            if (!motor_running) {
+                return;
+            }
+
             if (not _safe()){
                 enqueue(info_queue, 305);
                 _disable();
@@ -698,6 +706,11 @@ namespace Task {
 
         void _init_motor(){
             motor.Init(MOTOR_ID, CAN_TX_PIN, CAN_RX_PIN);
+        }
+
+        void _mark_motor_calibrated() {
+            motor.calibrated = true;
+            motor_calibrated = true;
         }
 
         void _manage_monitor(){
@@ -756,17 +769,26 @@ namespace Task {
 
             // Disable motor and set zero position
             _disable();
-            motor.Set_zero();
+            if (kMotorRequiresZeroCalibration) {
+                st = motor.Set_zero();
+            }
         }
 
         void _find_limit_and_set_zero(float torque_threshold=-2, float speed=-0.5F) {
             st = motor.Set_control(torque_threshold, 0, speed, 0, 2);
             vTaskDelay(pdMS_TO_TICKS(6000));
             _disable();
-            st = motor.Set_zero();
+            if (kMotorRequiresZeroCalibration) {
+                st = motor.Set_zero();
+            }
         }
 
         void _auto_calibrate() {
+            if (!kMotorRequiresZeroCalibration) {
+                _mark_motor_calibrated();
+                return;
+            }
+
             send_led_message(LED_MSG_CALI);
             st = motor.Get_state();
             MonitorTask::set_channel(ADC_CHANNEL_HALL);
@@ -792,7 +814,7 @@ namespace Task {
                 _find_limit_and_set_zero(-5, -0.1);
                 offset = 0;
             }
-            motor.calibrated = true;
+            _mark_motor_calibrated();
 
             MonitorTask::set_channel(ADC_CHANNEL_VOLTAGE);
             enqueue(info_queue, 309);
@@ -800,21 +822,24 @@ namespace Task {
             _enable();
             if (offset != 0)
                 _move_to_middle();
-            motor_calibrated = true;  // Sync calibration status
         }
 
         void _manual_calibrate(){
+            if (!kMotorRequiresZeroCalibration) {
+                _mark_motor_calibrated();
+                return;
+            }
+
             enqueue(info_queue, 310);
             _disable();
             _init_motor();
             vTaskDelay(pdMS_TO_TICKS(100));
             st = motor.Set_zero();
             vTaskDelay(pdMS_TO_TICKS(100));
-            motor.calibrated = true;
+            _mark_motor_calibrated();
             enqueue(info_queue, 311);
             vTaskDelay(pdMS_TO_TICKS(100));
             _move_to_middle();
-            motor_calibrated = true;  // Sync calibration status
 
         }
 
@@ -833,7 +858,9 @@ namespace Task {
                 vTaskDelay(pdMS_TO_TICKS(100));
             } else if (calibrate_command == 3){
                 // Set current position as zero position
-                st = motor.Set_zero();
+                if (kMotorRequiresZeroCalibration) {
+                    st = motor.Set_zero();
+                }
             }
 
             if (restart_command){
@@ -863,7 +890,11 @@ namespace Task {
 
             _disable();
             _wait_for_switch_on();
-            _auto_calibrate();
+            if (kMotorRequiresZeroCalibration) {
+                _auto_calibrate();
+            } else {
+                _mark_motor_calibrated();
+            }
             
             _enable();
             
