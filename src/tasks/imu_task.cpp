@@ -1,4 +1,24 @@
 #include "tasks.hpp"
+#include "deploy_config.h"
+
+namespace {
+
+constexpr float DEGREES_TO_RADIANS = static_cast<float>(M_PI) / 180.0f;
+
+void getImuFrameRotation(float rotation[4], float rotation_conjugate[4]) {
+    const float half_theta = 0.5f * DEPLOY_IMU_FRAME_ROTATION_DEG * DEGREES_TO_RADIANS;
+    rotation[0] = std::cos(half_theta);
+    rotation[1] = 0.0f;
+    rotation[2] = 0.0f;
+    rotation[3] = std::sin(half_theta);
+
+    rotation_conjugate[0] = rotation[0];
+    rotation_conjugate[1] = -rotation[1];
+    rotation_conjugate[2] = -rotation[2];
+    rotation_conjugate[3] = -rotation[3];
+}
+
+}
 
 void normalize(float& w, float& x, float& y, float& z) {
     float norm = std::sqrt(w*w + x*x + y*y + z*z);
@@ -19,12 +39,9 @@ std::vector<float> rotateQuaternion(float x, float y, float z, float w) {
     // Normalize the quaternion
     normalize(w, x, y, z);
 
-    // Rotation quaternion (60 degrees around z-axis)
-    float theta = -60.0 * M_PI / 180.0; // Convert degrees to radians
-    float r[4] = {std::cos(theta / 2), 0, 0, std::sin(theta / 2)}; // (w, x, y, z)
-
-    // Conjugate of r
-    float rConjugate[4] = {r[0], -r[1], -r[2], -r[3]};
+    float r[4];
+    float rConjugate[4];
+    getImuFrameRotation(r, rConjugate);
 
     // Original quaternion
     float q[4] = {w, x, y, z};
@@ -41,13 +58,9 @@ std::vector<float> rotateQuaternion(float x, float y, float z, float w) {
 
 // Function to rotate an angular velocity vector
 std::vector<float> rotateAngularVelocity(float wx, float wy, float wz) {
-
-    // Rotation quaternion (60 degrees around z-axis)
-    float theta = -60.0 * M_PI / 180.0; // Convert degrees to radians
-    float r[4] = {std::cos(theta / 2), 0, 0, std::sin(theta / 2)}; // (w, x, y, z)
-
-    // Conjugate of r
-    float rConjugate[4] = {r[0], -r[1], -r[2], -r[3]};
+    float r[4];
+    float rConjugate[4];
+    getImuFrameRotation(r, rConjugate);
 
     // Angular velocity quaternion
     float omega[4] = {0, wx, wy, wz}; // (w, x, y, z)
