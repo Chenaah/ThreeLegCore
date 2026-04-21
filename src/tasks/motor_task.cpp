@@ -774,8 +774,8 @@ namespace Task {
         }
 
         void _move_to_zero_with_soft_kp() {
-            constexpr float kStartupPositionKp = 3.0f;
-            constexpr float kStartupPositionKd = 0.5f;
+            constexpr float kStartupPositionKp = 30.0f;
+            constexpr float kStartupPositionKd = 2.0f;
             constexpr TickType_t kStepDelayMs = 20;       // ms per substep
             constexpr float kRampDurationMs   = 5000.0f;  // total ramp time in ms
             const int n_steps = (int)(kRampDurationMs / (float)kStepDelayMs);

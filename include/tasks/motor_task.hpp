@@ -9,13 +9,6 @@
 
 #define MOTOR_ID 1
 
-// constexpr Motor_type kMotorType = Motor_type::Cybergear;
-// constexpr bool kMotorRequiresZeroCalibration = true;
-// constexpr float kMotorFrameOffset = -1.0471975512F;
-constexpr Motor_type kMotorType = Motor_type::RS03;
-constexpr bool kMotorRequiresZeroCalibration = false;
-constexpr float kMotorFrameOffset = 0.0F;
-
 
 // Control loop timing
 #define POLICY_LOOP_HZ      DEPLOY_POLICY_LOOP_HZ
