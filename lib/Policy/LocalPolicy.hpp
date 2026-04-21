@@ -246,8 +246,7 @@ public:
         if (mean >  LOCAL_CLIP_MEAN) mean =  LOCAL_CLIP_MEAN;
 
         float a = tanhf(mean);
-        return LOCAL_ACTION_LOW +
-               (a + 1.0f) * 0.5f * (LOCAL_ACTION_HIGH - LOCAL_ACTION_LOW);
+        return LOCAL_ACTION_LOW + (a + 1.0f) * 0.5f * (LOCAL_ACTION_HIGH - LOCAL_ACTION_LOW);
     }
 
     float select_action(const std::array<float, LOCAL_LATENT_DIM>& latent_cmd,

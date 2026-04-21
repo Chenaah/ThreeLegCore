@@ -26,6 +26,8 @@ namespace Task {
         float goal_distance = 0.233f;  // Goal distance to be set externally
 
         bool connected = false;
+        uint32_t last_comm_warn_ms = 0;
+        bool last_feedback_publish_ok = true;
 
         float last_rcv_timestamp = 0;
         uint64_t receive_dt = 0;
@@ -170,7 +172,7 @@ namespace Task {
             feedback.motor.motor_error = st.error_state & 0x3F;
             // Motor mode: 0=Reset/Off, 1=Calibration, 2=Active/On
             // If motor is not calibrated, force mode to 1 (Calibration)
-            feedback.motor.motor_mode = motor_calibrated ? ((st.error_state >> 6) & 0x03) : 1;
+            feedback.motor.motor_mode = (!motor_calibrated || motor_startup_ramping) ? 1 : ((st.error_state >> 6) & 0x03);
             // feedback.motor.motor_mode = ((st.error_state >> 6) & 0x03);
             // Driver error: packed fault state from driver chip
             feedback.motor.driver_error = motor_error2;
@@ -275,8 +277,43 @@ namespace Task {
                    feedback.policy_debug.local_obs,
                    sizeof(feedback.policy_debug.local_obs));
 
-            // Publish feedback
-            feedbackPub->publish(feedback);
+            // Publish feedback and surface transport issues on serial.
+            const wl_status_t wifi_status = WiFi.status();
+            const bool wifi_ok = wifi_status == WL_CONNECTED;
+            const bool publish_ok = feedbackPub != nullptr && feedbackPub->publish(feedback);
+            const uint32_t now_ms = millis();
+
+            if (!wifi_ok || !publish_ok) {
+                if (now_ms - last_comm_warn_ms >= 1000) {
+                    const IPAddress ip = WiFi.localIP();
+                    Serial.printf(
+                        "[Comm] Feedback publish issue: wifi=%d ip=%u.%u.%u.%u publish=%d pub_count=%lu recv_dt_us=%llu module=%d\n",
+                        static_cast<int>(wifi_status),
+                        static_cast<unsigned int>(ip[0]),
+                        static_cast<unsigned int>(ip[1]),
+                        static_cast<unsigned int>(ip[2]),
+                        static_cast<unsigned int>(ip[3]),
+                        publish_ok ? 1 : 0,
+                        feedbackPub != nullptr
+                            ? static_cast<unsigned long>(feedbackPub->getPublishCount())
+                            : 0UL,
+                        static_cast<unsigned long long>(receive_dt),
+                        module_id);
+                    last_comm_warn_ms = now_ms;
+                }
+                last_feedback_publish_ok = false;
+            } else if (!last_feedback_publish_ok) {
+                const IPAddress ip = WiFi.localIP();
+                Serial.printf(
+                    "[Comm] Feedback publish recovered: ip=%u.%u.%u.%u pub_count=%lu module=%d\n",
+                    static_cast<unsigned int>(ip[0]),
+                    static_cast<unsigned int>(ip[1]),
+                    static_cast<unsigned int>(ip[2]),
+                    static_cast<unsigned int>(ip[3]),
+                    static_cast<unsigned long>(feedbackPub->getPublishCount()),
+                    module_id);
+                last_feedback_publish_ok = true;
+            }
         }
         
         void run(void *pvParameters) {

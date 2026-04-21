@@ -270,6 +270,7 @@ namespace Task {
     float command_kp = 0;
     float command_kd = 0;
     int enable_filter = 1;
+    float hall_threshold = 900.0F; //940.0F;
     int received_control_mode =
         DEPLOY_USE_XBOX_CONTROLLER ? CONTROL_MODE_ONBOARD_MODEL : CONTROL_MODE_DIRECT_PD;
     float received_joint_offset = DEPLOY_DEFAULT_DOF_POS[0];
@@ -290,6 +291,8 @@ namespace Task {
     float policy_debug_local_obs[LOCAL_OBS_DIM] = {};
     std::queue<int> info_queue;
     bool motor_calibrated = false;  // Motor calibration status
+    bool motor_startup_ramping = false;
+    uint32_t last_enable_attempt_ms = 0;
 
     // Command interpolator instance
     CommandInterpolator cmd_interpolator;
@@ -345,6 +348,12 @@ namespace Task {
     }
 
     namespace MotorTask {
+
+        enum class StepCommandStatus : uint8_t {
+            Sent = 0,
+            SkipMotorOff = 1,
+            SkipNotCalibrated = 2,
+        };
 
         Motor motor(kMotorType);
         ButterworthFilter filter(15, PD_LOOP_HZ);      // 15 Hz cutoff for target position
@@ -561,7 +570,11 @@ namespace Task {
 
         bool _safe() {
             bool safe = true;
-            if (!motor.calibrated){
+            // Use the firmware-owned logical calibration state here.
+            // The Motor library currently clears motor.calibrated on transient
+            // CAN TX/RX failures, which is a transport-health signal rather than
+            // a true loss of zero-position calibration.
+            if (!motor_calibrated){
                 safe = false;
                 enqueue(info_queue, 300);
             }
@@ -586,16 +599,29 @@ namespace Task {
                 policy_status_bits = compute_policy_status_bits();
             }
 
-            DEBUG_PRINT("motor.Enable()");
-            send_led_message(LED_MSG_MOTOR_ON);
-            enqueue(info_queue, 301);
-
             cmd_interpolator.reset();  // Clear stale waypoints before enabling
             filter.reset();            // Clear filter state to avoid transient
             pos_filter.reset();
             vel_filter.reset();
             reset_local_obs_history();
+
+            DEBUG_PRINT("motor.Enable()");
             st = motor.Enable();
+            if (st.mode != 2) {
+                motor_running = false;
+                send_led_message(LED_MSG_MOTOR_ERROR);
+                enqueue(info_queue, 317);
+                Serial.printf(
+                    "[Motor] Enable failed: mode=%d error_state=0x%02X calibrated=%d\n",
+                    st.mode,
+                    st.error_state,
+                    motor.calibrated ? 1 : 0
+                );
+                return false;
+            }
+
+            send_led_message(LED_MSG_MOTOR_ON);
+            enqueue(info_queue, 301);
             motor_running = true;
             switch_off_request = 0;
             epi_start_time = millis();
@@ -613,10 +639,17 @@ namespace Task {
 
         bool _check_remote_switch() {
             bool enable = (bool)remote_switch;
+            constexpr uint32_t ENABLE_RETRY_INTERVAL_MS = 100;
             if (motor_running && ! enable)
                 _disable();
-            else if (!motor_running && enable)
-                return _enable();
+            else if (!motor_running && enable) {
+                uint32_t now_ms = millis();
+                if (now_ms - last_enable_attempt_ms >= ENABLE_RETRY_INTERVAL_MS) {
+                    last_enable_attempt_ms = now_ms;
+                    return _enable();
+                }
+                return false;
+            }
             return motor_running;
         }
 
@@ -628,10 +661,14 @@ namespace Task {
             return st;
         }
 
-        void _step(float target_angle, float target_vel, float kp = 20, float kd = 0.5) {
-            if (motor_running && _safe())
-                st = motor.Set_control(0, target_angle + offset, target_vel, kp, kd);
-           
+        StepCommandStatus _step(float target_angle, float target_vel, float kp = 20, float kd = 0.5) {
+            if (!motor_running)
+                return StepCommandStatus::SkipMotorOff;
+            if (!_safe())
+                return StepCommandStatus::SkipNotCalibrated;
+
+            st = motor.Set_control(0, target_angle + offset, target_vel, kp, kd);
+            return StepCommandStatus::Sent;
         }
 
         void _wait_for_switch_off() {
@@ -713,6 +750,93 @@ namespace Task {
             motor_calibrated = true;
         }
 
+        void _sync_runtime_offset_to_pi_range() {
+            st = motor.Get_state();
+
+            constexpr float kTwoPi = 2.0f * PI;
+            float logical_angle = st.angle - offset;
+
+            while (logical_angle > PI) {
+                offset += kTwoPi;
+                logical_angle -= kTwoPi;
+            }
+            while (logical_angle < -PI) {
+                offset -= kTwoPi;
+                logical_angle += kTwoPi;
+            }
+
+            Serial.printf(
+                "[Motor] Startup offset sync: raw=%.3f logical=%.3f offset=%.3f\n",
+                st.angle,
+                logical_angle,
+                offset
+            );
+        }
+
+        void _move_to_zero_with_soft_kp() {
+            constexpr float kStartupPositionKp = 3.0f;
+            constexpr float kStartupPositionKd = 0.5f;
+            constexpr TickType_t kStepDelayMs = 20;       // ms per substep
+            constexpr float kRampDurationMs   = 5000.0f;  // total ramp time in ms
+            const int n_steps = (int)(kRampDurationMs / (float)kStepDelayMs);
+
+            st = motor.Get_state();
+            const float start_logical_angle = st.angle - offset;
+
+            Serial.printf(
+                "[Motor] Ramp to zero: logical_start=%.3f kp=%.1f kd=%.1f ramp_ms=%.0f offset=%.3f\n",
+                start_logical_angle,
+                kStartupPositionKp,
+                kStartupPositionKd,
+                kRampDurationMs,
+                offset
+            );
+
+            // Linear interpolation over fixed time: always takes kRampDurationMs ms
+            motor_startup_ramping = true;
+            for (int i = 0; i <= n_steps; i++) {
+                float alpha = (float)i / (float)n_steps;
+                float cmd = start_logical_angle * (1.0f - alpha); // lerp toward 0
+                StepCommandStatus s = _step(cmd, 0.0f, kStartupPositionKp, kStartupPositionKd);
+                Serial.printf("[Ramp] i=%d/%d alpha=%.3f cmd=%.4f status=%d t=%lu\n",
+                    i, n_steps, alpha, cmd, (int)s, millis());
+                vTaskDelay(pdMS_TO_TICKS(kStepDelayMs));
+            }
+
+            motor_startup_ramping = false;
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+
+        void _initialize_absolute_encoder_startup() {
+            _sync_runtime_offset_to_pi_range();
+            _mark_motor_calibrated();
+
+            // Read position before enabling so we can hold it immediately after
+            st = motor.Get_state();
+            const float pre_enable_logical = st.angle - offset;
+
+            // Retry enable — first attempt can return mode=0 if the motor needs
+            // a moment after Set_mode(Motion) before it accepts Enable.
+            bool enabled = false;
+            for (int attempt = 0; attempt < 5 && !enabled; attempt++) {
+                if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(200));
+                enabled = _enable();
+                Serial.printf("[Motor] _enable attempt %d: %s\n", attempt + 1, enabled ? "ok" : "fail");
+            }
+            if (!enabled) {
+                Serial.println("[Motor] Startup move aborted: _enable() failed after retries.");
+                return;
+            }
+
+            // Hold the pre-enable position immediately — prevents the motor from
+            // snapping to encoder zero on the first motion-mode tick after Enable.
+            Serial.printf("[Motor] pre_enable_logical=%.3f t=%lu\n", pre_enable_logical, millis());
+            _step(pre_enable_logical, 0.0f, 3.0f, 0.5f);
+            Serial.printf("[Motor] hold sent, entering ramp t=%lu\n", millis());
+
+            _move_to_zero_with_soft_kp();
+        }
+
         void _manage_monitor(){
             unsigned long elapsed_time = millis() - epi_start_time;
             if (elapsed_time/1000. > 5){
@@ -736,6 +860,7 @@ namespace Task {
             // Wait until monitored_value is below the target threshold
             while (monitored_value < target_value) {
                 vTaskDelay(pdMS_TO_TICKS(1));
+                Serial.printf("[MotorTask] Spinning motor... monitored_value=%.2f target=%.2f\n", monitored_value, target_value);
                 motor_temp_val = motor.Get_state().angle;
             }
             motor_angle_sum += motor_temp_val;
@@ -804,7 +929,7 @@ namespace Task {
 
             if (calibrate_command < 4){
                 // Search for the magnetic marker
-                _align_motor_and_set_zero(motor, 940, 0.5);
+                _align_motor_and_set_zero(motor, hall_threshold, 0.5F);
             } else if (calibrate_command == 4){
                 // Move to the mechanical limit
                 _find_limit_and_set_zero(5, 0.1);
@@ -864,7 +989,10 @@ namespace Task {
             }
 
             if (restart_command){
-                esp_restart();
+                // Ignore software restart requests during debugging.
+                // Leaving the command latched would repeatedly hit this branch.
+                restart_command = 0;
+                // esp_restart();
                 // _wait_for_help();
             }
         }
@@ -893,10 +1021,14 @@ namespace Task {
             if (kMotorRequiresZeroCalibration) {
                 _auto_calibrate();
             } else {
-                _mark_motor_calibrated();
+                _initialize_absolute_encoder_startup();
             }
-            
-            _enable();
+
+            // Only enable here if startup didn't already succeed — avoids a
+            // second Enable that would let the motor snap to the PC target.
+            if (!motor_running) {
+                _enable();
+            }
             
             // PD loop runs at 500 Hz. Policy inference rate comes from deploy_config.h.
             TickType_t lastWakeTime = xTaskGetTickCount();
@@ -1107,7 +1239,8 @@ namespace Task {
                     filtered_pos = interp_pos;
 
                 // === 5. Send command to motor ===
-                _step(filtered_pos, interp_vel, interp_kp, interp_kd);
+                StepCommandStatus step_status =
+                    _step(filtered_pos, interp_vel, interp_kp, interp_kd);
 
                 // === 6. Update motor error state ===
                 motor_error = st.error_state;
@@ -1133,27 +1266,44 @@ namespace Task {
                 if (now_ms - last_print_time >= 500) {
                     last_print_time = now_ms;
                     unsigned long time_total = micros() - t_start;
+                    const char* step_status_str = "sent";
+                    if (step_status == StepCommandStatus::SkipMotorOff) {
+                        step_status_str = "skip_motor_off";
+                    } else if (step_status == StepCommandStatus::SkipNotCalibrated) {
+                        step_status_str = "skip_not_cal";
+                    }
                     if (use_onboard_model) {
-                        Serial.printf("[Motor/NN] mode=%d f=%.1fHz pos=%.3f target=%.3f offset=%.3f ctx[0]=%.3f hash=%d/%d status=0x%x err=%d sub=%d dt_us=%lu\n",
+                        Serial.printf("[Motor/NN] ctrl_mode=%d run=%d lib_cal=%d logical_cal=%d st_mode=%d step=%s f=%.1fHz pos=%.3f target=%.3f offset=%.3f ctx[0]=%.3f hash=%d/%d pstatus=0x%x perr=%d raw_err=0x%02x drv=0x%08x sub=%d dt_us=%lu\n",
                                       received_control_mode,
+                                      motor_running ? 1 : 0,
+                                      motor.calibrated ? 1 : 0,
+                                      motor_calibrated ? 1 : 0,
+                                      st.mode,
+                                      step_status_str,
                                       loop_freq_filtered, st.angle, filtered_pos,
                                       received_joint_offset, received_command_context[0],
                                       ::onboard_model.get_policy_hash(), received_policy_hash,
                                       policy_status_bits, policy_error_code,
+                                      motor_error & 0xFF,
+                                      motor_error2,
                                       substep, time_total);
                     } else {
-                        Serial.printf("[Motor] mode=%d f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f hash=%d/%d status=0x%x err=%d dt_us=%lu\n",
+                        Serial.printf("[Motor] ctrl_mode=%d run=%d lib_cal=%d logical_cal=%d st_mode=%d step=%s f=%.1fHz pos=%.3f interp_pos=%.3f vel=%.2f kp=%.1f kd=%.2f hash=%d/%d pstatus=0x%x perr=%d raw_err=0x%02x drv=0x%08x dt_us=%lu\n",
                                       received_control_mode,
+                                      motor_running ? 1 : 0,
+                                      motor.calibrated ? 1 : 0,
+                                      motor_calibrated ? 1 : 0,
+                                      st.mode,
+                                      step_status_str,
                                       loop_freq_filtered, st.angle, filtered_pos, interp_vel,
                                       interp_kp, interp_kd,
                                       ::onboard_model.get_policy_hash(), received_policy_hash,
                                       policy_status_bits, policy_error_code,
+                                      motor_error & 0xFF,
+                                      motor_error2,
                                       time_total);
                     }
                 }
-
-                DEBUG_PRINT("Position");
-                DEBUG_PRINT(st.angle);
 
                 // === 8. Sleep until next tick (deterministic timing) ===
                 vTaskDelayUntil(&lastWakeTime, dt);

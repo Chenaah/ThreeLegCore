@@ -23,18 +23,25 @@ enum class LocalObsTransform : uint8_t {
 constexpr size_t LOCAL_LATENT_DIM = 8;
 constexpr size_t LOCAL_FRAME_HISTORY_STEPS = 5;
 constexpr size_t LOCAL_LATENT_HISTORY_STEPS = 5;
+constexpr size_t LOCAL_CONTEXT_DIM = 0;
 constexpr size_t LOCAL_TRANSPORT_COMMAND_CONTEXT_DIM = 8;
 constexpr size_t LOCAL_TRANSPORT_DEBUG_OBS_DIM = 40;
-constexpr size_t LOCAL_FRAME_COMPONENT_COUNT = 2;
+constexpr size_t LOCAL_FRAME_COMPONENT_COUNT = 4;
+constexpr bool LOCAL_APPEND_MODULE_ONE_HOT = false;
+constexpr size_t LOCAL_MODULE_ONE_HOT_DIM = 0;
+constexpr bool LOCAL_APPEND_TIMING_SIGNAL = false;
+constexpr float LOCAL_TIMING_SIGNAL_OMEGA = 6.28318531f;
 constexpr LocalObsField LOCAL_FRAME_COMPONENTS[LOCAL_FRAME_COMPONENT_COUNT] = {
+    LocalObsField::ProjectedGravity,
+    LocalObsField::Gyro,
     LocalObsField::DofPos,
     LocalObsField::DofVel
 };
 constexpr LocalObsTransform LOCAL_FRAME_TRANSFORMS[LOCAL_FRAME_COMPONENT_COUNT] = {
-    LocalObsTransform::None, LocalObsTransform::None
+    LocalObsTransform::None, LocalObsTransform::None, LocalObsTransform::None, LocalObsTransform::None
 };
-constexpr size_t LOCAL_FRAME_DIM = 2;
-constexpr size_t LOCAL_OBS_DIM = 50;
+constexpr size_t LOCAL_FRAME_DIM = 8;
+constexpr size_t LOCAL_OBS_DIM = 80;
 constexpr size_t LOCAL_DEBUG_COMMAND_CONTEXT_DIM =
     (LOCAL_LATENT_DIM < LOCAL_TRANSPORT_COMMAND_CONTEXT_DIM)
         ? LOCAL_LATENT_DIM

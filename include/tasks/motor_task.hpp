@@ -225,12 +225,14 @@ namespace Task {
     extern float large_motor_pos;
     extern std::queue<int> info_queue;
     extern bool motor_calibrated;  // Motor calibration status
+    extern bool motor_startup_ramping;  // True while startup ramp to zero is in progress
 
     extern float target_pos;
     extern float target_vel;
     extern float command_kp;
     extern float command_kd;
     extern int enable_filter;
+    extern float hall_threshold;
     extern int received_control_mode;       // Control mode from last command
     extern float received_joint_offset;     // Per-joint offset from last command
     extern int received_policy_hash;        // Expected policy hash from the PC

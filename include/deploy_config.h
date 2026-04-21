@@ -26,7 +26,8 @@ constexpr bool DEPLOY_USE_XBOX_CONTROLLER = false;
 
 // IMU frame rotation applied around the Z axis before publishing IMU data.
 // Set to 0.0f for hardware that is already aligned with the robot frame.
-constexpr float DEPLOY_IMU_FRAME_ROTATION_DEG = -60.0f;
+// constexpr float DEPLOY_IMU_FRAME_ROTATION_DEG = -60.0f;
+constexpr float DEPLOY_IMU_FRAME_ROTATION_DEG = 0.0f;
 
 // Per-module default joint position offset (radians)
 // Module 0: 0.0000 rad

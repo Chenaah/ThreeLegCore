@@ -1,5 +1,6 @@
 #include "MotorCtrl.hpp"
 #include <cmath>
+#include "esp_err.h"
 
 #define _USE_MATH_DEFINES
 
@@ -41,6 +42,74 @@ Motor_profile get_builtin_profile(const Motor_type type)
             0.0F, 500.0F,
             0.0F, 5.0F,
             10.0F};
+    }
+}
+
+const char* twai_state_to_string(const twai_state_t state)
+{
+    switch (state)
+    {
+    case TWAI_STATE_STOPPED:
+        return "stopped";
+    case TWAI_STATE_RUNNING:
+        return "running";
+    case TWAI_STATE_BUS_OFF:
+        return "bus_off";
+    case TWAI_STATE_RECOVERING:
+        return "recovering";
+    default:
+        return "unknown";
+    }
+}
+
+void print_can_transport_error(
+    const char* const context,
+    const esp_err_t err,
+    const twai_message_t* const tx_msg_ptr)
+{
+    if (tx_msg_ptr != nullptr)
+    {
+        Serial.printf(
+            "[CAN] %s err=%s (0x%X) tx_id=0x%08lX dlc=%u flags=0x%08lX\n",
+            context,
+            esp_err_to_name(err),
+            static_cast<unsigned int>(err),
+            static_cast<unsigned long>(tx_msg_ptr->identifier),
+            static_cast<unsigned int>(tx_msg_ptr->data_length_code),
+            static_cast<unsigned long>(tx_msg_ptr->flags));
+    }
+    else
+    {
+        Serial.printf(
+            "[CAN] %s err=%s (0x%X)\n",
+            context,
+            esp_err_to_name(err),
+            static_cast<unsigned int>(err));
+    }
+
+    twai_status_info_t status = {};
+    const esp_err_t status_err = twai_get_status_info(&status);
+    if (status_err == ESP_OK)
+    {
+        Serial.printf(
+            "[CAN] state=%s txq=%lu rxq=%lu tx_err=%lu rx_err=%lu tx_fail=%lu rx_miss=%lu rx_ovr=%lu arb_lost=%lu bus_err=%lu\n",
+            twai_state_to_string(status.state),
+            static_cast<unsigned long>(status.msgs_to_tx),
+            static_cast<unsigned long>(status.msgs_to_rx),
+            static_cast<unsigned long>(status.tx_error_counter),
+            static_cast<unsigned long>(status.rx_error_counter),
+            static_cast<unsigned long>(status.tx_failed_count),
+            static_cast<unsigned long>(status.rx_missed_count),
+            static_cast<unsigned long>(status.rx_overrun_count),
+            static_cast<unsigned long>(status.arb_lost_count),
+            static_cast<unsigned long>(status.bus_error_count));
+    }
+    else
+    {
+        Serial.printf(
+            "[CAN] twai_get_status_info failed err=%s (0x%X)\n",
+            esp_err_to_name(status_err),
+            static_cast<unsigned int>(status_err));
     }
 }
 } // namespace
@@ -113,10 +182,12 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
     // Clear RX buffer to avoid stale data
     memset(RX_msg_ptr, 0, sizeof(twai_message_t));
 
-    if (twai_transmit(TX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME)) != ESP_OK)
+    const esp_err_t tx_err = twai_transmit(TX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME));
+    if (tx_err != ESP_OK)
     {
         send_led_message(LED_MSG_MOTOR_ERROR);
         DEBUG_PRINT("Oh no! Failed to talk to the motor! \n");
+        print_can_transport_error("TX failed", tx_err, TX_msg_ptr);
         calibrated = false;
         return 0;
     }
@@ -125,9 +196,11 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
     // If we get a fault frame, store it and try to receive again for the actual response
     int max_retries = 3;
     for (int i = 0; i < max_retries; i++) {
-        if (twai_receive(RX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME)) != ESP_OK)
+        const esp_err_t rx_err = twai_receive(RX_msg_ptr, pdMS_TO_TICKS(CAN_WAIT_TIME));
+        if (rx_err != ESP_OK)
         {
             DEBUG_PRINT("Failed to receive message\n");
+            print_can_transport_error("RX failed", rx_err, TX_msg_ptr);
             calibrated = false;
             return 0;
         }
@@ -148,6 +221,7 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
     
     // If we got here, we only received fault frames
     DEBUG_PRINT("Only received fault frames, no response\n");
+    print_can_transport_error("Only fault frames received, no normal response", ESP_ERR_TIMEOUT, TX_msg_ptr);
     return 0;
 }
 
@@ -303,7 +377,7 @@ const Motor_profile& Motor::Get_motor_profile() const
 Motor_state Motor::Unpack(const twai_message_t msg)
 {
     Motor_state temp;
-
+	
     temp.CAN_ID = (msg.identifier >> 8) & 0xFF;
     temp.error_state = (msg.identifier >> 16) & 0xFF; // cmd_data[1]
     temp.mode = (msg.identifier >> 22) & 0x03;
@@ -628,6 +702,7 @@ Motor_state Motor::Set_mode(const Motor_mode mode)
 
     if (CAN_Transceive(&tx_msg, &rx_msg))
     {
+        curr_mode = mode;
         return Unpack(rx_msg);
     }
     else
