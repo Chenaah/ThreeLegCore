@@ -300,6 +300,25 @@ namespace Task {
     // Config
     float offset = kMotorFrameOffset; // motor offset, shared for correcting sent observation
     const float DELTA_T = CONTROL_LOOP_DT_MS; // Control loop period in ms
+    static constexpr int CALIBRATION_MODE_NONE = 0;
+    static constexpr int CALIBRATION_MODE_STARTUP_ABSOLUTE = -1;
+    static constexpr int CALIBRATION_MODE_MANUAL = 1;
+    static constexpr int CALIBRATION_MODE_AUTO = 2;
+    int pending_calibration_mode = CALIBRATION_MODE_NONE;
+
+    static void _set_pending_calibration_mode(int mode) {
+        pending_calibration_mode = mode;
+    }
+
+    static void _clear_pending_calibration_mode() {
+        pending_calibration_mode = CALIBRATION_MODE_NONE;
+    }
+
+    static int _default_pending_calibration_mode() {
+        return kMotorRequiresZeroCalibration
+            ? CALIBRATION_MODE_AUTO
+            : CALIBRATION_MODE_STARTUP_ABSOLUTE;
+    }
 
     static int compute_policy_status_bits() {
         int status = 0;
@@ -348,6 +367,14 @@ namespace Task {
     }
 
     namespace MotorTask {
+
+        bool _initialize_absolute_encoder_startup();
+        bool _auto_calibrate(
+            bool command_triggered = false,
+            int calibration_mode = CALIBRATION_MODE_AUTO
+        );
+        bool _manual_calibrate(bool command_triggered = false);
+        bool _resume_pending_calibration_if_needed();
 
         enum class StepCommandStatus : uint8_t {
             Sent = 0,
@@ -581,7 +608,14 @@ namespace Task {
             return safe;
         }
 
-        bool _enable(){
+        bool _enable(bool allow_uncalibrated = false){
+            if (!allow_uncalibrated && !motor_calibrated) {
+                send_led_message(LED_MSG_WAIT_CALI);
+                enqueue(info_queue, 300);
+                Serial.println("[Motor] Enable blocked: logical calibration not complete.");
+                return false;
+            }
+
             if (received_control_mode == CONTROL_MODE_ONBOARD_MODEL) {
                 int validation_error = validate_onboard_model_runtime();
                 report_policy_error_if_needed(validation_error);
@@ -646,11 +680,67 @@ namespace Task {
                 uint32_t now_ms = millis();
                 if (now_ms - last_enable_attempt_ms >= ENABLE_RETRY_INTERVAL_MS) {
                     last_enable_attempt_ms = now_ms;
+                    if (pending_calibration_mode == CALIBRATION_MODE_NONE && !motor_calibrated) {
+                        _set_pending_calibration_mode(_default_pending_calibration_mode());
+                    }
+                    if (pending_calibration_mode != CALIBRATION_MODE_NONE) {
+                        return _resume_pending_calibration_if_needed();
+                    }
                     return _enable();
                 }
                 return false;
             }
             return motor_running;
+        }
+
+        bool _calibration_abort_requested(bool command_triggered = false) {
+            if (remote_switch != 0) {
+                return false;
+            }
+            if (!command_triggered) {
+                return true;
+            }
+            return calibrate_command == 0;
+        }
+
+        bool _abort_calibration_if_requested(
+            const char* stage,
+            bool command_triggered = false
+        ) {
+            if (!_calibration_abort_requested(command_triggered)) {
+                return false;
+            }
+
+            Serial.printf(
+                "[Motor] Calibration aborted during %s (switch=%d calibrate=%d)\n",
+                stage,
+                remote_switch,
+                calibrate_command
+            );
+            enqueue(info_queue, 318);
+            _disable();
+            return true;
+        }
+
+        bool _wait_abortable_ms(
+            uint32_t total_ms,
+            const char* stage,
+            bool command_triggered = false,
+            uint32_t poll_ms = 10
+        ) {
+            uint32_t waited_ms = 0;
+            while (waited_ms < total_ms) {
+                if (_abort_calibration_if_requested(stage, command_triggered)) {
+                    return false;
+                }
+                uint32_t step_ms = poll_ms;
+                if (step_ms > total_ms - waited_ms) {
+                    step_ms = total_ms - waited_ms;
+                }
+                vTaskDelay(pdMS_TO_TICKS(step_ms));
+                waited_ms += step_ms;
+            }
+            return !_abort_calibration_if_requested(stage, command_triggered);
         }
 
         Motor_state _manual_pd_control(float target_angle, float target_vel, float kp = 20, float kd = 0.5) {
@@ -727,18 +817,29 @@ namespace Task {
             }
         }
 
-        void _move_to_middle(){
+        bool _move_to_middle(bool command_triggered = false){
             enqueue(info_queue, 306);
-            _enable();
+            if (_abort_calibration_if_requested("move_to_middle.begin", command_triggered)) {
+                return false;
+            }
+            if (!_enable()) {
+                return false;
+            }
             for (float i = 0; i <= PI/2; i += 0.01){
+                if (_abort_calibration_if_requested("move_to_middle.step", command_triggered)) {
+                    return false;
+                }
                 vTaskDelay(pdMS_TO_TICKS(10));
-                    // motor.Set_position(offset*sin(i));
+                if (_abort_calibration_if_requested("move_to_middle.step", command_triggered)) {
+                    return false;
+                }
+                // motor.Set_position(offset*sin(i));
                 _step(-offset*cos(i), 0, 20, 0.5);
                 DEBUG_PRINT("==> ");
                 DEBUG_PRINT(st.angle);
             }
             enqueue(info_queue, 307);
-
+            return true;
         }
 
         void _init_motor(){
@@ -773,7 +874,7 @@ namespace Task {
             );
         }
 
-        void _move_to_zero_with_soft_kp() {
+        bool _move_to_zero_with_soft_kp(bool command_triggered = false) {
             constexpr float kStartupPositionKp = 30.0f;
             constexpr float kStartupPositionKd = 2.0f;
             constexpr TickType_t kStepDelayMs = 20;       // ms per substep
@@ -795,6 +896,10 @@ namespace Task {
             // Linear interpolation over fixed time: always takes kRampDurationMs ms
             motor_startup_ramping = true;
             for (int i = 0; i <= n_steps; i++) {
+                if (_abort_calibration_if_requested("startup_ramp", command_triggered)) {
+                    motor_startup_ramping = false;
+                    return false;
+                }
                 float alpha = (float)i / (float)n_steps;
                 float cmd = start_logical_angle * (1.0f - alpha); // lerp toward 0
                 StepCommandStatus s = _step(cmd, 0.0f, kStartupPositionKp, kStartupPositionKd);
@@ -804,10 +909,13 @@ namespace Task {
             }
 
             motor_startup_ramping = false;
-            vTaskDelay(pdMS_TO_TICKS(500));
+            if (!_wait_abortable_ms(500, "startup_ramp.settle", command_triggered, 20)) {
+                return false;
+            }
+            return true;
         }
 
-        void _initialize_absolute_encoder_startup() {
+        bool _initialize_absolute_encoder_startup() {
             _sync_runtime_offset_to_pi_range();
             _mark_motor_calibrated();
 
@@ -820,12 +928,15 @@ namespace Task {
             bool enabled = false;
             for (int attempt = 0; attempt < 5 && !enabled; attempt++) {
                 if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(200));
+                if (_abort_calibration_if_requested("absolute_startup.enable_retry")) {
+                    return false;
+                }
                 enabled = _enable();
                 Serial.printf("[Motor] _enable attempt %d: %s\n", attempt + 1, enabled ? "ok" : "fail");
             }
             if (!enabled) {
                 Serial.println("[Motor] Startup move aborted: _enable() failed after retries.");
-                return;
+                return false;
             }
 
             // Hold the pre-enable position immediately — prevents the motor from
@@ -834,7 +945,7 @@ namespace Task {
             _step(pre_enable_logical, 0.0f, 3.0f, 0.5f);
             Serial.printf("[Motor] hold sent, entering ramp t=%lu\n", millis());
 
-            _move_to_zero_with_soft_kp();
+            return _move_to_zero_with_soft_kp();
         }
 
         void _manage_monitor(){
@@ -850,15 +961,29 @@ namespace Task {
         }
 
         // Function to spin the motor until the monitored value crosses a threshold
-        float _spin_until_threshold(Motor &motor, float target_value, float speed, bool reverse = false) {
-            float motor_angle_sum = 0.0F;
+        bool _spin_until_threshold(
+            Motor &motor,
+            float target_value,
+            float speed,
+            float &motor_angle_sum,
+            bool reverse = false,
+            bool command_triggered = false
+        ) {
+            motor_angle_sum = 0.0F;
             float motor_temp_val = 0.0F;
+
+            if (_abort_calibration_if_requested("spin_until_threshold.start", command_triggered)) {
+                return false;
+            }
 
             // Set motor control speed and direction
             st = motor.Set_control(0, 0, reverse ? -speed : speed, 0, 40);
 
             // Wait until monitored_value is below the target threshold
             while (monitored_value < target_value) {
+                if (_abort_calibration_if_requested("spin_until_threshold.search", command_triggered)) {
+                    return false;
+                }
                 vTaskDelay(pdMS_TO_TICKS(1));
                 Serial.printf("[MotorTask] Spinning motor... monitored_value=%.2f target=%.2f\n", monitored_value, target_value);
                 motor_temp_val = motor.Get_state().angle;
@@ -867,76 +992,146 @@ namespace Task {
 
             // Wait until monitored_value exceeds a secondary threshold for finer control
             while (monitored_value > target_value - 20) {
+                if (_abort_calibration_if_requested("spin_until_threshold.refine", command_triggered)) {
+                    return false;
+                }
                 vTaskDelay(pdMS_TO_TICKS(1));
                 motor_temp_val = motor.Get_state().angle;
             }
             motor_angle_sum += motor_temp_val;
 
-            return motor_angle_sum;
+            return true;
         }
 
         // Main function to align motor and set zero position
-        void _align_motor_and_set_zero(Motor &motor, float hall_threshold, float speed = 0.5F) {
+        bool _align_motor_and_set_zero(
+            Motor &motor,
+            float hall_threshold,
+            float speed = 0.5F,
+            bool command_triggered = false
+        ) {
             float motor_total = 0.0F;
+            float motor_partial = 0.0F;
 
             // Spin motor in the forward direction
-            motor_total += _spin_until_threshold(motor, hall_threshold, speed);
+            if (!_spin_until_threshold(
+                    motor,
+                    hall_threshold,
+                    speed,
+                    motor_partial,
+                    false,
+                    command_triggered
+                )) {
+                return false;
+            }
+            motor_total += motor_partial;
 
             // Pause before reversing
-            vTaskDelay(pdMS_TO_TICKS(500));
+            if (!_wait_abortable_ms(500, "align.pause", command_triggered, 10)) {
+                return false;
+            }
 
             // Spin motor in the reverse direction
-            motor_total += _spin_until_threshold(motor, hall_threshold, speed, true);
+            if (!_spin_until_threshold(
+                    motor,
+                    hall_threshold,
+                    speed,
+                    motor_partial,
+                    true,
+                    command_triggered
+                )) {
+                return false;
+            }
+            motor_total += motor_partial;
 
             // Average the total motor angle and set position
+            if (_abort_calibration_if_requested("align.set_midpoint", command_triggered)) {
+                return false;
+            }
             st = motor.Set_control(0, motor_total / 4.0F, 0, 20, 0.5);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            if (!_wait_abortable_ms(1000, "align.settle", command_triggered, 10)) {
+                return false;
+            }
 
             // Disable motor and set zero position
             _disable();
+            if (_abort_calibration_if_requested("align.set_zero", command_triggered)) {
+                return false;
+            }
             if (kMotorRequiresZeroCalibration) {
                 st = motor.Set_zero();
             }
+            return true;
         }
 
-        void _find_limit_and_set_zero(float torque_threshold=-2, float speed=-0.5F) {
+        bool _find_limit_and_set_zero(
+            float torque_threshold=-2,
+            float speed=-0.5F,
+            bool command_triggered = false
+        ) {
+            if (_abort_calibration_if_requested("find_limit.start", command_triggered)) {
+                return false;
+            }
             st = motor.Set_control(torque_threshold, 0, speed, 0, 2);
-            vTaskDelay(pdMS_TO_TICKS(6000));
+            if (!_wait_abortable_ms(6000, "find_limit.search", command_triggered, 10)) {
+                return false;
+            }
             _disable();
+            if (_abort_calibration_if_requested("find_limit.set_zero", command_triggered)) {
+                return false;
+            }
             if (kMotorRequiresZeroCalibration) {
                 st = motor.Set_zero();
             }
+            return true;
         }
 
-        void _auto_calibrate() {
+        bool _auto_calibrate(
+            bool command_triggered,
+            int calibration_mode
+        ) {
             if (!kMotorRequiresZeroCalibration) {
                 _mark_motor_calibrated();
-                return;
+                return true;
             }
 
             send_led_message(LED_MSG_CALI);
             st = motor.Get_state();
             MonitorTask::set_channel(ADC_CHANNEL_HALL);
             // TODO: Check the reading from the hall sensor is correct
-            vTaskDelay(pdMS_TO_TICKS(100));
+            if (!_wait_abortable_ms(100, "auto_calibrate.prepare", command_triggered, 10)) {
+                return false;
+            }
             _disable();
+            if (_abort_calibration_if_requested("auto_calibrate.reinit", command_triggered)) {
+                return false;
+            }
             _init_motor();
             st = motor.Set_zero();
-            _enable();
+            if (_abort_calibration_if_requested("auto_calibrate.zero", command_triggered)) {
+                return false;
+            }
+            _enable(true);
             send_led_message(LED_MSG_CALI);
 
             enqueue(info_queue, 308);
 
-            if (calibrate_command < 4){
+            if (calibration_mode < 4){
                 // Search for the magnetic marker
-                _align_motor_and_set_zero(motor, hall_threshold, 0.5F);
-            } else if (calibrate_command == 4){
+                if (!_align_motor_and_set_zero(motor, hall_threshold, 0.5F, command_triggered)) {
+                    return false;
+                }
+            } else if (calibration_mode == 4){
                 // Move to the mechanical limit
-                _find_limit_and_set_zero(5, 0.1);
+                if (!_find_limit_and_set_zero(5, 0.1, command_triggered)) {
+                    return false;
+                }
                 offset = 0;
-            } else if (calibrate_command == 5){
+            } else if (calibration_mode == 5){
                 // Move to the mechanical limit
-                _find_limit_and_set_zero(-5, -0.1);
+                if (!_find_limit_and_set_zero(-5, -0.1, command_triggered)) {
+                    return false;
+                }
                 offset = 0;
             }
             _mark_motor_calibrated();
@@ -944,43 +1139,90 @@ namespace Task {
             MonitorTask::set_channel(ADC_CHANNEL_VOLTAGE);
             enqueue(info_queue, 309);
             // vTaskDelay(pdMS_TO_TICKS(100));
+            if (_abort_calibration_if_requested("auto_calibrate.complete", command_triggered)) {
+                return false;
+            }
             _enable();
-            if (offset != 0)
-                _move_to_middle();
+            if (offset != 0) {
+                return _move_to_middle(command_triggered);
+            }
+            return true;
         }
 
-        void _manual_calibrate(){
+        bool _manual_calibrate(bool command_triggered){
             if (!kMotorRequiresZeroCalibration) {
                 _mark_motor_calibrated();
-                return;
+                return true;
             }
 
             enqueue(info_queue, 310);
             _disable();
             _init_motor();
-            vTaskDelay(pdMS_TO_TICKS(100));
+            if (!_wait_abortable_ms(100, "manual_calibrate.reinit", command_triggered, 10)) {
+                return false;
+            }
             st = motor.Set_zero();
-            vTaskDelay(pdMS_TO_TICKS(100));
+            if (!_wait_abortable_ms(100, "manual_calibrate.zero", command_triggered, 10)) {
+                return false;
+            }
             _mark_motor_calibrated();
             enqueue(info_queue, 311);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            _move_to_middle();
+            if (!_wait_abortable_ms(100, "manual_calibrate.complete", command_triggered, 10)) {
+                return false;
+            }
+            return _move_to_middle(command_triggered);
 
+        }
+
+        bool _resume_pending_calibration_if_needed() {
+            int calibration_mode = pending_calibration_mode;
+            if (calibration_mode == CALIBRATION_MODE_NONE) {
+                return false;
+            }
+
+            Serial.printf("[Motor] Resuming pending calibration mode %d\n", calibration_mode);
+
+            bool success = false;
+            if (calibration_mode == CALIBRATION_MODE_STARTUP_ABSOLUTE) {
+                success = _initialize_absolute_encoder_startup();
+            } else if (calibration_mode == CALIBRATION_MODE_MANUAL) {
+                success = _manual_calibrate(false);
+            } else {
+                success = _auto_calibrate(false, calibration_mode);
+            }
+
+            if (success) {
+                _clear_pending_calibration_mode();
+            }
+            return success;
         }
 
         void _check_commands() {
             if (calibrate_command == 1){
                 // Manual calibration
+                _set_pending_calibration_mode(CALIBRATION_MODE_MANUAL);
                 enqueue(info_queue, 312);
-                vTaskDelay(pdMS_TO_TICKS(100));
+                if (!_wait_abortable_ms(100, "manual_calibrate.command", true, 10)) {
+                    return;
+                }
                 // _auto_calibrate();
-                _manual_calibrate();
-                vTaskDelay(pdMS_TO_TICKS(100));
-            } else if (calibrate_command == 2){
+                if (!_manual_calibrate(true)) {
+                    return;
+                }
+                _clear_pending_calibration_mode();
+                _wait_abortable_ms(100, "manual_calibrate.cleanup", true, 10);
+            } else if (calibrate_command == 2 || calibrate_command == 4 || calibrate_command == 5){
                 // Auto calibration
-                vTaskDelay(pdMS_TO_TICKS(100));
-                _auto_calibrate();
-                vTaskDelay(pdMS_TO_TICKS(100));
+                int requested_mode = calibrate_command;
+                _set_pending_calibration_mode(requested_mode);
+                if (!_wait_abortable_ms(100, "auto_calibrate.command", true, 10)) {
+                    return;
+                }
+                if (!_auto_calibrate(true, requested_mode)) {
+                    return;
+                }
+                _clear_pending_calibration_mode();
+                _wait_abortable_ms(100, "auto_calibrate.cleanup", true, 10);
             } else if (calibrate_command == 3){
                 // Set current position as zero position
                 if (kMotorRequiresZeroCalibration) {
@@ -1019,9 +1261,15 @@ namespace Task {
             _disable();
             _wait_for_switch_on();
             if (kMotorRequiresZeroCalibration) {
-                _auto_calibrate();
+                _set_pending_calibration_mode(CALIBRATION_MODE_AUTO);
+                if (_auto_calibrate(false, CALIBRATION_MODE_AUTO)) {
+                    _clear_pending_calibration_mode();
+                }
             } else {
-                _initialize_absolute_encoder_startup();
+                _set_pending_calibration_mode(CALIBRATION_MODE_STARTUP_ABSOLUTE);
+                if (_initialize_absolute_encoder_startup()) {
+                    _clear_pending_calibration_mode();
+                }
             }
 
             // Only enable here if startup didn't already succeed — avoids a
