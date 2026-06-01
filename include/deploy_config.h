@@ -27,13 +27,15 @@ constexpr int DEPLOY_LOCAL_H2_DIM = 64;
 constexpr bool DEPLOY_USE_XBOX_CONTROLLER = false;
 
 // Motor deployment config. Override these in the exporter CLI for non-default hardware.
+// constexpr Motor_type kMotorType = Motor_type::Cybergear;
+// constexpr bool kMotorRequiresZeroCalibration = true;
+// constexpr float kMotorFrameOffset = -1.0471975512;
+// constexpr float DEPLOY_IMU_FRAME_ROTATION_DEG = -60.0f;
+
+
 constexpr Motor_type kMotorType = Motor_type::RS03;
 constexpr bool kMotorRequiresZeroCalibration = false;
-constexpr float kMotorFrameOffset = 0.0F;
-
-// IMU frame rotation applied around the Z axis before publishing IMU data.
-// Set to 0.0f for hardware that is already aligned with the robot frame.
-// constexpr float DEPLOY_IMU_FRAME_ROTATION_DEG = -60.0f;
+constexpr float kMotorFrameOffset = 0;
 constexpr float DEPLOY_IMU_FRAME_ROTATION_DEG = 0.0f;
 
 // Per-module default joint position offset (radians)
@@ -45,6 +47,13 @@ constexpr float DEPLOY_DEFAULT_DOF_POS[3] = {0.000000f, 0.500000f, -0.500000f};
 // PD gains used by firmware deployment
 constexpr float DEPLOY_KP = 8.0f;
 constexpr float DEPLOY_KD = 0.2f;
+
+// Motor torque/current limits (applied via Set_parameter in MotorCtrl::Get_state).
+// DEPLOY_MAX_TORQUE caps the motor's internal torque output (N·m).
+// DEPLOY_MAX_CURRENT caps the motor's q-axis current (A) in position mode.
+// Datasheet for RS03: peak torque ≈ 60 N·m, peak current ≈ 90 A.
+constexpr float DEPLOY_MAX_TORQUE = 50.0f;
+constexpr float DEPLOY_MAX_CURRENT = 43.0f;
 
 // Action space bounds
 constexpr float DEPLOY_ACTION_LOW = -0.800000f;

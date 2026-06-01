@@ -390,6 +390,11 @@ public:
 
     bool calibrated = false;
 
+    // Number of consecutive failed CAN_Transceive() calls (TX, RX, or only-fault-frames).
+    // Resets to 0 on the first successful response. Read by motor_task to surface a
+    // persistent CAN-loss indicator on the dashboard (bit 25 of driver_error).
+    uint32_t consecutive_can_failures = 0;
+
 private:
     // CAN ID of this motor
     uint8_t CAN_ID = XIAOMI_DEFAULT_MOTOR_CAN_ID;

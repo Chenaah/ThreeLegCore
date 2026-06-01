@@ -1,6 +1,7 @@
 #include "MotorCtrl.hpp"
 #include <cmath>
 #include "esp_err.h"
+#include "deploy_config.h"
 
 #define _USE_MATH_DEFINES
 
@@ -189,6 +190,7 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
         DEBUG_PRINT("Oh no! Failed to talk to the motor! \n");
         print_can_transport_error("TX failed", tx_err, TX_msg_ptr);
         calibrated = false;
+        consecutive_can_failures++;
         return 0;
     }
 
@@ -202,9 +204,10 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
             DEBUG_PRINT("Failed to receive message\n");
             print_can_transport_error("RX failed", rx_err, TX_msg_ptr);
             calibrated = false;
+            consecutive_can_failures++;
             return 0;
         }
-        
+
         // Check if this is a fault frame (Communication Type 21 = 0x15)
         uint8_t msg_type = (RX_msg_ptr->identifier >> 24) & 0x1F;
         if (msg_type == 0x15) {
@@ -215,13 +218,15 @@ bool Motor::CAN_Transceive(twai_message_t *const TX_msg_ptr, twai_message_t *con
             // Continue loop to get the actual response
         } else {
             // This is the expected response
+            consecutive_can_failures = 0;
             return 1;
         }
     }
-    
+
     // If we got here, we only received fault frames
     DEBUG_PRINT("Only received fault frames, no response\n");
     print_can_transport_error("Only fault frames received, no normal response", ESP_ERR_TIMEOUT, TX_msg_ptr);
+    consecutive_can_failures++;
     return 0;
 }
 
@@ -750,8 +755,8 @@ Motor_state Motor::Get_state()
     // }
     // return Set_parameter(Motor_param::not_exist, 30.0F);
     Set_parameter(Motor_param::limit_spd, 30.0F);
-    Set_parameter(Motor_param::imit_torque, 10.0F);
-    return Set_parameter(Motor_param::limit_cur, 27.0F);
+    Set_parameter(Motor_param::imit_torque, DEPLOY_MAX_TORQUE);
+    return Set_parameter(Motor_param::limit_cur, DEPLOY_MAX_CURRENT);
 }
 
 bool Motor::Check_Fault_Frame(Motor_fault_state* fault_out)

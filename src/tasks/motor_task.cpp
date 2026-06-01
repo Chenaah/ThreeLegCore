@@ -5,6 +5,15 @@
 // Forward declaration of the global onboard-model instance defined in main.cpp
 extern LocalPolicy onboard_model;
 
+// CAN-loss indicator surfaced via bit 25 of driver_error (unused on Cybergear).
+// Bits 0-5, 7, 16, 24 are real driver fault flags; 8-15 overload; 17-20 fault_flag.
+// Bit 25 is unused on the wire, so we hijack it as a transport-health bit.
+static constexpr uint32_t DRIVER_ERROR_CAN_LOST_BIT = 1u << 25;
+// Number of consecutive failed CAN_Transceive() calls before we consider the bus
+// to that module persistently lost. With CAN_WAIT_TIME=10ms and up to 2 timeouts
+// per call, 5 failures ≈ up to 100ms of dead bus — past any single-cycle glitch.
+static constexpr uint32_t CAN_LOSS_FAILURE_THRESHOLD = 5;
+
 static constexpr size_t COMMAND_CONTEXT_HISTORY_BUFFER_STEPS =
     (Task::COMMAND_CONTEXT_HISTORY_STEPS > 0) ? Task::COMMAND_CONTEXT_HISTORY_STEPS : 1;
 
@@ -270,7 +279,7 @@ namespace Task {
     float command_kp = 0;
     float command_kd = 0;
     int enable_filter = 1;
-    float hall_threshold = 900.0F; //940.0F;
+    float hall_threshold = 940.0F;
     int received_control_mode =
         DEPLOY_USE_XBOX_CONTROLLER ? CONTROL_MODE_ONBOARD_MODEL : CONTROL_MODE_DIRECT_PD;
     float received_joint_offset = DEPLOY_DEFAULT_DOF_POS[0];
@@ -1500,6 +1509,14 @@ namespace Task {
                     enqueue(info_queue, 316);
                 }
                 motor_error2 = fault_state_to_uint32(last_fault);
+
+                // Surface persistent CAN loss as a dedicated bit in driver_error so the
+                // dashboard can distinguish "module gone silent" from "module disabled".
+                if (motor.consecutive_can_failures >= CAN_LOSS_FAILURE_THRESHOLD) {
+                    motor_error2 |= DRIVER_ERROR_CAN_LOST_BIT;
+                } else {
+                    motor_error2 &= ~DRIVER_ERROR_CAN_LOST_BIT;
+                }
 
                 _check_health();
                 _check_safety();
