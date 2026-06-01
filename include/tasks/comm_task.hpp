@@ -78,7 +78,9 @@ struct PolicyDebugData {
     int valid;             // 1 when debug data is populated
     int seq;               // Monotonic onboard-model tick counter
     float nn_action;       // Raw onboard-model action in [-0.8, 0.8]
-    float motor_target;    // Final motor target after adding joint_offset
+    float motor_target;    // Base motor target before interpolation/filter
+    float interp_target;   // Interpolated target at the current PD tick
+    float applied_target;  // Final target after optional low-pass filtering
     float joint_offset;    // Joint offset applied on ESP32
     float dof_pos;         // Filtered joint position used by the onboard model
     float dof_vel;         // Filtered joint velocity used by the onboard model

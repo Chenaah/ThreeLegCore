@@ -200,6 +200,8 @@ namespace Task {
             feedback.policy_debug.seq = policy_debug_seq;
             feedback.policy_debug.nn_action = policy_debug_nn_action;
             feedback.policy_debug.motor_target = policy_debug_motor_target;
+            feedback.policy_debug.interp_target = policy_debug_interp_target;
+            feedback.policy_debug.applied_target = policy_debug_applied_target;
             feedback.policy_debug.joint_offset = policy_debug_joint_offset;
             feedback.policy_debug.dof_pos = policy_debug_dof_pos;
             feedback.policy_debug.dof_vel = policy_debug_dof_vel;
@@ -267,6 +269,8 @@ namespace Task {
             data_to_send.policy_debug.seq = feedback.policy_debug.seq;
             data_to_send.policy_debug.nn_action = feedback.policy_debug.nn_action;
             data_to_send.policy_debug.motor_target = feedback.policy_debug.motor_target;
+            data_to_send.policy_debug.interp_target = feedback.policy_debug.interp_target;
+            data_to_send.policy_debug.applied_target = feedback.policy_debug.applied_target;
             data_to_send.policy_debug.joint_offset = feedback.policy_debug.joint_offset;
             data_to_send.policy_debug.dof_pos = feedback.policy_debug.dof_pos;
             data_to_send.policy_debug.dof_vel = feedback.policy_debug.dof_vel;

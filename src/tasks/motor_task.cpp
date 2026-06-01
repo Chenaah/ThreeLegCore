@@ -284,6 +284,8 @@ namespace Task {
     int policy_debug_seq = 0;
     float policy_debug_nn_action = 0.0f;
     float policy_debug_motor_target = 0.0f;
+    float policy_debug_interp_target = 0.0f;
+    float policy_debug_applied_target = 0.0f;
     float policy_debug_joint_offset = 0.0f;
     float policy_debug_dof_pos = 0.0f;
     float policy_debug_dof_vel = 0.0f;
@@ -1407,7 +1409,6 @@ namespace Task {
                     policy_debug_valid = 1;
                     policy_debug_seq += 1;
                     policy_debug_nn_action = 0.0f;
-                    policy_debug_motor_target = target_pos;
                     policy_debug_joint_offset = received_joint_offset;
                     policy_debug_dof_pos = filtered_dof_pos;
                     policy_debug_dof_vel = filtered_dof_vel;
@@ -1460,6 +1461,7 @@ namespace Task {
                     interp_vel = 0.0f;
                     interp_kp  = DEPLOY_KP;
                     interp_kd  = DEPLOY_KD;
+                    policy_debug_motor_target = curr_policy_target;
 
                 } else {
                     // --- Legacy PD mode: interpolate from PC-sent position target ---
@@ -1471,11 +1473,10 @@ namespace Task {
                     } else {
                         cmd_interpolator.sample(interp_pos, interp_vel, interp_kp, interp_kd);
                     }
-
-                    if (debug_obs_ready) {
-                        policy_debug_motor_target = interp_pos;
-                    }
+                    policy_debug_motor_target = target_pos;
                 }
+
+                policy_debug_interp_target = interp_pos;
 
                 substep = (substep + 1) % PD_SUBSTEPS;
 
@@ -1485,6 +1486,7 @@ namespace Task {
                     filtered_pos = filter.filter(interp_pos);
                 else
                     filtered_pos = interp_pos;
+                policy_debug_applied_target = filtered_pos;
 
                 // === 5. Send command to motor ===
                 StepCommandStatus step_status =

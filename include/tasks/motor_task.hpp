@@ -240,6 +240,8 @@ namespace Task {
     extern int policy_debug_seq;
     extern float policy_debug_nn_action;
     extern float policy_debug_motor_target;
+    extern float policy_debug_interp_target;
+    extern float policy_debug_applied_target;
     extern float policy_debug_joint_offset;
     extern float policy_debug_dof_pos;
     extern float policy_debug_dof_vel;
